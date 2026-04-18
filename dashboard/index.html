@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>rumi dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>rumi</h1>
+    <select id="url-select" aria-label="Select URL"></select>
+  </header>
+
+  <main>
+    <section id="summary" class="card hidden">
+      <div class="summary-row">
+        <div><span class="label">URL</span><a id="url" target="_blank"></a></div>
+        <div><span class="label">Status</span><span id="status" class="badge"></span></div>
+        <div><span class="label">Counts</span><span id="counts"></span></div>
+      </div>
+      <p id="description"></p>
+    </section>
+
+    <section id="use-cases"></section>
+
+    <section id="logs" class="card hidden">
+      <h2>Logs <span class="dim">(tail)</span></h2>
+      <pre id="logs-body"></pre>
+    </section>
+
+    <p id="empty" class="empty">No sessions yet. Run <code>rumi init &lt;url&gt;</code>.</p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

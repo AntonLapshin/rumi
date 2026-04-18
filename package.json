@@ -1,0 +1,37 @@
+{
+  "name": "rumi",
+  "version": "0.1.0",
+  "description": "Autonomous QA test runner that drives Claude Code / OpenCode through PM -> FEE -> QA personas.",
+  "type": "module",
+  "bin": {
+    "rumi": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "dashboard",
+    "Dockerfile",
+    ".dockerignore",
+    "tsconfig.json",
+    "package-lock.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "tsc",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "execa": "^9.5.1",
+    "serve": "^14.2.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
