@@ -178,6 +178,10 @@ function buildPersonaPrompt(
 ): string {
   const template = fs.readFileSync(path.join(templateDir(), `persona-${role}.md`), "utf8");
   const sessionJson = fs.readFileSync(path.join(sessionDir, "session.json"), "utf8");
+  const sessionUrl = (() => {
+    try { return JSON.parse(sessionJson).url as string; } catch { return ""; }
+  })();
+  const browserUrl = toBrowserUrl(sessionUrl);
 
   return [
     template.trim(),
@@ -191,9 +195,10 @@ function buildPersonaPrompt(
     `- logs.txt path: \`${path.join(sessionDir, "logs.txt")}\``,
     "",
     "## Networking (IMPORTANT — you are inside a Docker container)",
-    "- The host machine's `localhost` is **not** your container's localhost. To reach the host, use `host.docker.internal`.",
-    "- When calling `playwright-cli open` / `playwright-cli goto` with a URL taken from `session.json#url`, if the URL host is `localhost` or `127.0.0.1`, substitute `host.docker.internal` (e.g. `http://localhost:5173/foo` → `http://host.docker.internal:5173/foo`) **only for the browser call**. Do **not** mutate `session.json`.",
-    "- When writing `e2e/<id>.test.ts`, use the **original** URL from `session.json#url` (with `localhost`/`127.0.0.1` intact) — those tests are re-run by the user on the host, where `localhost` means the host.",
+    `- **Browser URL — use this exact URL for every \`playwright-cli open\` / \`playwright-cli goto\` call:** \`${browserUrl}\``,
+    `- **e2e spec URL — use this exact URL when writing \`e2e/<id>.test.ts\`:** \`${sessionUrl}\` (original from \`session.json#url\`; those specs are re-run on the host where \`localhost\` means the host).`,
+    "- Do **not** read `session.json#url` for the browser call — use the Browser URL stated above. Do **not** mutate `session.json`.",
+    "- Background: the host's `localhost` is not your container's localhost; `host.docker.internal` resolves to the host from inside the container. The substitution is already done for you above.",
     "",
     "## Config (from rumi/config.json)",
     `- Playwright action timeout: \`${config.timeouts.playwrightActionMs}\` ms`,
@@ -218,16 +223,27 @@ function findProjectRoot(sessionDir: string): string {
   return path.resolve(sessionDir, "..", "..");
 }
 
-async function preflightUrlReachable(sessionDir: string, rawUrl: string): Promise<void> {
-  // We're inside the container. `localhost` / `127.0.0.1` from session.json point at
-  // the container's own loopback; the host is at host.docker.internal.
-  let probeUrl: string;
+// Rewrite localhost/127.0.0.1 URLs so they resolve to the host from inside the
+// container. Used both for the orchestrator's own preflight and for the URL we
+// hand personas to point their browser at. Keeps the substitution in one place
+// so the two can't drift.
+export function toBrowserUrl(rawUrl: string): string {
   try {
     const u = new URL(rawUrl);
     if (u.hostname === "localhost" || u.hostname === "127.0.0.1") {
       u.hostname = "host.docker.internal";
     }
-    probeUrl = u.toString();
+    return u.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
+async function preflightUrlReachable(sessionDir: string, rawUrl: string): Promise<void> {
+  let probeUrl: string;
+  try {
+    new URL(rawUrl);
+    probeUrl = toBrowserUrl(rawUrl);
   } catch {
     return; // malformed URL; let the personas surface the real error
   }

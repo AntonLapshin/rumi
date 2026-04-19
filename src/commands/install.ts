@@ -119,10 +119,8 @@ function mirrorSkillToOpencode(projectRoot: string): void {
     return;
   }
 
-  // OpenCode discovers skills under both .opencode/skill (singular, matching its
-  // `command` convention) and .opencode/skills. Mirror to both to be safe.
+  // OpenCode discovers skills under .opencode/skills.
   const opencodeTargets = [
-    path.join(projectRoot, ".opencode", "skill"),
     path.join(projectRoot, ".opencode", "skills"),
   ];
   for (const target of opencodeTargets) {
