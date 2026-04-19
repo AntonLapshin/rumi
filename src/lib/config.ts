@@ -13,7 +13,6 @@ export const configSchema = z
     timeouts: z
       .object({
         personaRunMs: z.number().int().min(60_000).default(1_800_000),
-        docsRunMs: z.number().int().min(60_000).default(1_800_000),
         playwrightActionMs: z.number().int().min(1_000).default(30_000),
         playwrightNavigationMs: z.number().int().min(1_000).default(60_000),
       })

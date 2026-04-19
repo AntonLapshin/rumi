@@ -11,7 +11,9 @@ export const useCaseStatusSchema = z.enum([
 export type UseCaseStatus = z.infer<typeof useCaseStatusSchema>;
 
 export const useCaseSchema = z.object({
-  id: z.string().min(1),
+  // `id` is normalized from `title` by the orchestrator after every persona
+  // run; personas may leave it empty/stale and it will be regenerated.
+  id: z.string().default(""),
   title: z.string().min(1),
   description: z.string().min(1),
   actions: z.array(z.string()).optional(),

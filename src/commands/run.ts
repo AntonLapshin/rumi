@@ -4,9 +4,11 @@ import { execa } from "execa";
 import { templateDir } from "../lib/paths.js";
 import { appendLog } from "../lib/logger.js";
 import { readSession, writeSession } from "../lib/session-io.js";
-import { Session } from "../lib/schema.js";
+import { Session, UseCase } from "../lib/schema.js";
 import { buildRunnerArgs, detectRunner, Runner, runnerBinary } from "../lib/runner.js";
 import { Config, readConfig } from "../lib/config.js";
+import { normalize } from "../lib/normalize.js";
+import { scaffoldE2eSpec } from "../lib/e2e-scaffold.js";
 import {
   assertDockerAvailable,
   isInsideContainer,
@@ -68,7 +70,7 @@ async function runOrchestratorLocal(sessionDir: string, opts: RunOptions): Promi
   const projectRoot = opts.projectRoot ?? findProjectRoot(sessionDir);
   const config = readConfig(projectRoot);
   const runner = await detectRunner(opts.runner ?? config.runner ?? undefined);
-  const maxIterations = opts.maxIterations ?? 12;
+  const maxIterations = opts.maxIterations ?? 40;
 
   appendLog(
     sessionDir,
@@ -76,7 +78,8 @@ async function runOrchestratorLocal(sessionDir: string, opts: RunOptions): Promi
     `starting loop (runner=${runner}, projectRoot=${projectRoot}, personaRunMs=${config.timeouts.personaRunMs})`,
   );
 
-  let session = readSession(sessionDir);
+  // Normalize whatever state is already on disk (resume case).
+  let session = writeAndReturn(sessionDir, normalize(readSession(sessionDir)));
   await preflightUrlReachable(sessionDir, session.url);
 
   let iter = 0;
@@ -86,16 +89,54 @@ async function runOrchestratorLocal(sessionDir: string, opts: RunOptions): Promi
     const next = decideNextPersona(session);
     if (!next) {
       session.status = "complete";
-      writeSession(sessionDir, session);
+      session = writeAndReturn(sessionDir, session);
       appendLog(sessionDir, "orchestrator", "all use cases have terminal status — complete");
       break;
     }
 
-    appendLog(sessionDir, "orchestrator", `iteration ${iter}: spawning ${next.toUpperCase()} persona`);
-    await spawnPersona(next, sessionDir, projectRoot, runner, config);
+    if (next === "qa") {
+      const target = pickNextUseCaseForQa(session);
+      if (!target) {
+        // Shouldn't happen (decideNextPersona said qa) — defensive.
+        session.status = "complete";
+        session = writeAndReturn(sessionDir, session);
+        break;
+      }
+      appendLog(
+        sessionDir,
+        "orchestrator",
+        `iteration ${iter}: QA on use case ${target.id}`,
+      );
+      // Mark the assigned use case as in-flight before spawning so the
+      // dashboard highlights it and so QA cannot get confused about which
+      // one it's meant to test.
+      target.status = "testing";
+      session = writeAndReturn(sessionDir, session);
+      scaffoldE2eSpec(sessionDir, target, session.url, config);
+      await spawnPersona("qa", sessionDir, projectRoot, runner, config, { useCaseId: target.id });
+      session = writeAndReturn(sessionDir, normalize(readSession(sessionDir)));
 
+      // Guard against QA leaving its assigned use case non-terminal (crashed,
+      // timed out, or ignored instructions). Without this, the loop would
+      // re-assign the same UC forever.
+      const after = session.useCases.find((u) => u.id === target.id);
+      if (after && !isTerminal(after)) {
+        after.status = "blocked";
+        if (!after.reason) after.reason = "QA did not record a result";
+        session = writeAndReturn(sessionDir, normalize(session));
+        appendLog(
+          sessionDir,
+          "orchestrator",
+          `⚠ QA left ${target.id} non-terminal; marked blocked`,
+        );
+      }
+      continue;
+    }
+
+    appendLog(sessionDir, "orchestrator", `iteration ${iter}: spawning ${next.toUpperCase()} persona`);
     const before = session;
-    session = readSession(sessionDir);
+    await spawnPersona(next, sessionDir, projectRoot, runner, config);
+    session = writeAndReturn(sessionDir, normalize(readSession(sessionDir)));
 
     if (!stateAdvanced(before, session, next)) {
       appendLog(sessionDir, "orchestrator", `⚠ ${next.toUpperCase()} did not advance state; breaking loop`);
@@ -110,12 +151,32 @@ async function runOrchestratorLocal(sessionDir: string, opts: RunOptions): Promi
   return session;
 }
 
+function writeAndReturn(sessionDir: string, s: Session): Session {
+  writeSession(sessionDir, s);
+  return s;
+}
+
+function isTerminal(uc: UseCase): boolean {
+  return uc.status === "passed" || uc.status === "failed" || uc.status === "blocked";
+}
+
+function pickNextUseCaseForQa(s: Session): UseCase | null {
+  // Prefer leftover "testing" (crashed previous run), then "ready"/"draft".
+  const crashed = s.useCases.find((u) => u.status === "testing");
+  if (crashed) return crashed;
+  return (
+    s.useCases.find(
+      (u) => (u.actions?.length ?? 0) > 0 && (u.status === "ready" || u.status === "draft" || !u.status),
+    ) ?? null
+  );
+}
+
 function decideNextPersona(s: Session): PersonaRole | null {
   if (!s.description || s.description.trim() === "" || s.useCases.length === 0) return "pm";
-  const needsActions = s.useCases.some((uc) => !uc.actions || uc.actions.length === 0 || !uc.status);
+  const needsActions = s.useCases.some((uc) => !uc.actions || uc.actions.length === 0);
   if (needsActions) return "fee";
   const needsTesting = s.useCases.some(
-    (uc) => uc.status === "ready" || uc.status === "draft" || uc.status === "testing",
+    (uc) => uc.status === "ready" || uc.status === "draft" || uc.status === "testing" || !uc.status,
   );
   if (needsTesting) return "qa";
   return null;
@@ -125,15 +186,14 @@ function stateAdvanced(before: Session, after: Session, role: PersonaRole): bool
   if (role === "pm") {
     return after.description.trim().length > 0 && after.useCases.length > 0;
   }
-  if (role === "fee") {
-    const beforeReady = before.useCases.filter((uc) => uc.actions && uc.actions.length > 0).length;
-    const afterReady = after.useCases.filter((uc) => uc.actions && uc.actions.length > 0).length;
-    return afterReady > beforeReady;
-  }
-  const terminal = (uc: { status?: string }) => uc.status === "passed" || uc.status === "failed" || uc.status === "blocked";
-  const beforeTerminal = before.useCases.filter(terminal).length;
-  const afterTerminal = after.useCases.filter(terminal).length;
-  return afterTerminal > beforeTerminal;
+  // fee
+  const beforeReady = before.useCases.filter((uc) => uc.actions && uc.actions.length > 0).length;
+  const afterReady = after.useCases.filter((uc) => uc.actions && uc.actions.length > 0).length;
+  return afterReady > beforeReady;
+}
+
+interface PersonaSpawnOpts {
+  useCaseId?: string;
 }
 
 async function spawnPersona(
@@ -142,8 +202,9 @@ async function spawnPersona(
   projectRoot: string,
   runner: Runner,
   config: Config,
+  spawnOpts: PersonaSpawnOpts = {},
 ): Promise<void> {
-  const prompt = buildPersonaPrompt(role, sessionDir, projectRoot, config);
+  const prompt = buildPersonaPrompt(role, sessionDir, projectRoot, config, spawnOpts);
   const bin = runnerBinary(runner);
   const args = buildRunnerArgs(runner, prompt);
 
@@ -156,6 +217,7 @@ async function spawnPersona(
       ...process.env,
       RUMI_SESSION: sessionDir,
       RUMI_ROLE: role,
+      ...(spawnOpts.useCaseId ? { RUMI_USE_CASE: spawnOpts.useCaseId } : {}),
     },
   });
 
@@ -175,6 +237,7 @@ function buildPersonaPrompt(
   sessionDir: string,
   projectRoot: string,
   config: Config,
+  spawnOpts: PersonaSpawnOpts,
 ): string {
   const template = fs.readFileSync(path.join(templateDir(), `persona-${role}.md`), "utf8");
   const sessionJson = fs.readFileSync(path.join(sessionDir, "session.json"), "utf8");
@@ -183,7 +246,7 @@ function buildPersonaPrompt(
   })();
   const browserUrl = toBrowserUrl(sessionUrl);
 
-  return [
+  const lines = [
     template.trim(),
     "",
     "## Session context",
@@ -194,28 +257,29 @@ function buildPersonaPrompt(
     `- e2e/ directory: \`${path.join(sessionDir, "e2e")}\``,
     `- logs.txt path: \`${path.join(sessionDir, "logs.txt")}\``,
     "",
-    "## Networking (IMPORTANT — you are inside a Docker container)",
-    `- **Browser URL — use this exact URL for every \`playwright-cli open\` / \`playwright-cli goto\` call:** \`${browserUrl}\``,
-    `- **e2e spec URL — use this exact URL when writing \`e2e/<id>.test.ts\`:** \`${sessionUrl}\` (original from \`session.json#url\`; those specs are re-run on the host where \`localhost\` means the host).`,
-    "- Do **not** read `session.json#url` for the browser call — use the Browser URL stated above. Do **not** mutate `session.json`.",
-    "- Background: the host's `localhost` is not your container's localhost; `host.docker.internal` resolves to the host from inside the container. The substitution is already done for you above.",
-    "",
-    "## Config (from rumi/config.json)",
-    `- Playwright action timeout: \`${config.timeouts.playwrightActionMs}\` ms`,
-    `- Playwright navigation timeout: \`${config.timeouts.playwrightNavigationMs}\` ms`,
-    "  Apply the timeouts when authoring `@playwright/test` spec files — set `test.use({ actionTimeout, navigationTimeout })` at the top of each spec, and prefer explicit `{ timeout }` options on flaky `expect(...).toBeVisible()`/`toBeEnabled()` assertions over the defaults.",
+    "## URLs",
+    `- Browser URL (use for every \`playwright-cli open\`/\`goto\` call): \`${browserUrl}\``,
+    `- Spec URL (already written into \`e2e/*.test.ts\` by the orchestrator): \`${sessionUrl}\``,
+  ];
+
+  if (role === "qa") {
+    lines.push(
+      "",
+      "## Task",
+      `- Test use case id: \`${spawnOpts.useCaseId ?? ""}\` (find it in \`session.json#useCases\` by id).`,
+      `- A skeleton \`e2e/<id>.test.ts\` has already been written with the right timeouts and \`goto\` — fill in the body.`,
+    );
+  }
+
+  lines.push(
     "",
     "## Current session.json",
     "```json",
     sessionJson.trim(),
     "```",
-    "",
-    "## Exit criteria",
-    "After finishing your work:",
-    "1. Overwrite `session.json` with the updated JSON (valid against the schema in your instructions).",
-    `2. Run: \`rumi log ${role} "<one-line summary>"\``,
-    "3. Exit.",
-  ].join("\n");
+  );
+
+  return lines.join("\n");
 }
 
 function findProjectRoot(sessionDir: string): string {

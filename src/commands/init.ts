@@ -4,11 +4,12 @@ import {
   projectRumiRoot,
   sessionDir,
 } from "../lib/paths.js";
-import { emptySession } from "../lib/schema.js";
+import { emptySession, Session } from "../lib/schema.js";
 import { writeSession, tryReadSession } from "../lib/session-io.js";
 import { appendLog } from "../lib/logger.js";
 import { describeDashboard, ensureDashboard } from "./serve.js";
 import { readConfig, writeDefaultConfigIfMissing } from "../lib/config.js";
+import { normalize } from "../lib/normalize.js";
 
 export interface InitOptions {
   projectRoot?: string;
@@ -32,7 +33,17 @@ export async function runInit(url: string, opts: InitOptions = {}): Promise<stri
     writeSession(dir, emptySession(url));
     appendLog(dir, "system", `session created for ${url} at ${dir}`);
   } else {
-    appendLog(dir, "system", `session resumed (status=${existing.status}, useCases=${existing.useCases.length})`);
+    const revived = reviveBlocked(existing);
+    if (revived.count > 0) {
+      writeSession(dir, normalize(revived.session));
+      appendLog(
+        dir,
+        "system",
+        `session resumed (status=${existing.status}, useCases=${existing.useCases.length}); requeued ${revived.count} blocked use case(s)`,
+      );
+    } else {
+      appendLog(dir, "system", `session resumed (status=${existing.status}, useCases=${existing.useCases.length})`);
+    }
   }
 
   updateSessionsIndex(projectRoot);
@@ -56,6 +67,23 @@ export async function runInit(url: string, opts: InitOptions = {}): Promise<stri
   }
 
   return dir;
+}
+
+// Re-running `/rumi` on a URL means the user wants another pass. Blocked use
+// cases usually reflect environmental problems (URL unreachable, QA crashed,
+// timeouts) rather than real product defects — requeue them so QA retries
+// on the fresh run. `failed` stays as-is; that's a real assertion failure
+// the user should look at before re-running.
+function reviveBlocked(s: Session): { session: Session; count: number } {
+  let count = 0;
+  for (const uc of s.useCases) {
+    if (uc.status === "blocked") {
+      uc.status = (uc.actions?.length ?? 0) > 0 ? "ready" : "draft";
+      delete uc.reason;
+      count++;
+    }
+  }
+  return { session: s, count };
 }
 
 function updateSessionsIndex(projectRoot: string) {

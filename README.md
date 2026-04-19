@@ -145,7 +145,6 @@ Dashboard HTML/JS/CSS is **not** copied into the project — those assets live i
   "image": "rumi:local",         // docker image tag used for run / serve containers
   "timeouts": {
     "personaRunMs": 1800000,     // 30 min — max per persona subprocess (enforced via `docker kill`)
-    "docsRunMs": 1800000,        // reserved (currently unused)
     "playwrightActionMs": 30000, // 30 s — baked into `test.use({ actionTimeout })` of generated specs
     "playwrightNavigationMs": 60000 // 60 s — baked into `test.use({ navigationTimeout })`
   }
