@@ -9,7 +9,7 @@ The id of the use case you must test is in the **Task** section below. Find it i
 1. Read `session.json` and locate your assigned use case.
 2. Start a fresh browser session:
    - `playwright-cli session-stop-all`
-   - `playwright-cli open <Browser URL from the URLs section>` (do **not** use `session.json#url` — use the Browser URL; `localhost` in `session.json` won't resolve inside the container).
+   - `playwright-cli open <url from session.json#url>`
 3. Execute each entry in `actions` in order. Each maps to one or more playwright-cli subcommands:
    - "Navigate to X" → `playwright-cli open X`
    - "Click Y" → `playwright-cli snapshot` (find the ref) then `playwright-cli click <ref>`
@@ -37,3 +37,4 @@ The id of the use case you must test is in the **Task** section below. Find it i
 - **Don't modify `actions`** — if ambiguous, mark `failed` with `reason: "action ambiguous: <quote>"`.
 - **Write the e2e spec even on failure** — it should reflect what you attempted so a human can debug.
 - **Do not** start, restart, or manage any dev server, build, or service. Assume the server at the URL is running.
+- **Exploration discipline** — if you grep the source for a selector or copy, use Glob/Grep with specific patterns and small `head_limit`. Never `ls -R`, `find .` without excludes, or scan `node_modules/`, `.git/`, `dist/`, `build/`, `.next/`, `coverage/`, `*.lock`, `*.min.*`. Respect `.gitignore`. Your ground truth is the live page via `playwright-cli snapshot`, not a repo crawl.

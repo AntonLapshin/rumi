@@ -2,39 +2,35 @@
 description: Run an autonomous QA pass on a URL (PM → FEE → QA personas)
 ---
 
-You are the orchestrator for a `rumi` session. Follow these steps exactly and keep messages terse.
+You are the orchestrator for a `rumi` session. This template is tuned for small/local models — do exactly what is written below, nothing more.
+
+**Tool-call schema reminder:** every `bash` tool call MUST include a non-empty `description` string (a short sentence). Omitting it fails with `Invalid input: expected string, received undefined`. Do not narrate "I will use the bash tool" — just emit the tool call with all required fields populated.
 
 ## 1. Collect the URL
 
-If the user typed a URL after `/rumi`, use it. Otherwise ask: "Which URL should we QA?" and wait for their reply.
+If the user typed a URL after `/rumi`, use that verbatim. Otherwise ask: "Which URL should we QA?" and wait for their reply.
 
-## 2. Scaffold the session
+## 2. Run the one-shot QA command
 
-Run:
+Make **one** bash tool call with these exact fields:
 
-```bash
-rumi init "<url>"
-```
+- `command`: `rumi qa "<url>"` (substitute the URL from step 1)
+- `description`: `Run rumi QA on <url>` (short sentence; must not be empty)
+- `timeout`: `600000` (10 minutes, or the maximum your harness allows)
 
-Capture the **last line of stdout** — that's the absolute path to the session directory. Store it as `SESSION`. `rumi init` also auto-starts the dashboard on port 3737 (idempotent — skipped if it's already up). Tell the user: "Dashboard: http://localhost:3737".
+`rumi qa` does init + orchestrator + summary in a single deterministic process. It prints:
 
-## 3. Run the persona loop
+- `Session: <absolute path>` on the first line
+- `Dashboard: http://localhost:3737` on the second line
+- a final `rumi complete — N passed, M failed, K blocked, status=<status>` line
 
-```bash
-rumi run "$SESSION"
-```
+## 3. Report
 
-This blocks. It will spawn headless `opencode run` subprocesses for each persona (PM → FEE → QA), re-reading `session.json` between iterations until status is `complete` or the safety cap is hit.
-
-**Use a long shell timeout** (≥10 min) for this call — persona loops often take longer than default caps. Per-persona subprocess timeouts are controlled separately inside `rumi/config.json` (`timeouts.personaRunMs`, default 30 min); edit that file if you need to tune them.
-
-## 4. Report
-
-When `rumi run` exits, read `$SESSION/session.json` and summarize in one or two sentences: counts of passed / failed / blocked use cases and the dashboard URL.
+Echo the final `rumi complete — …` line back to the user together with the dashboard URL. Do not read `session.json` yourself — the summary line already contains the counts.
 
 ---
 
 **Important:**
-- Do not try to play the personas yourself — the orchestrator spawns them.
+- Do not try to play the personas yourself — `rumi qa` spawns them.
 - Do not edit `session.json` directly; the child agents do that.
 - If `rumi` is not on PATH, tell the user to run `npm install -g` from the rumi repo.

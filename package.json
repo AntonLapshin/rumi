@@ -10,8 +10,6 @@
     "dist",
     "src",
     "dashboard",
-    "Dockerfile",
-    ".dockerignore",
     "tsconfig.json",
     "package-lock.json"
   ],
@@ -24,7 +22,6 @@
   "dependencies": {
     "commander": "^12.1.0",
     "execa": "^9.5.1",
-    "serve": "^14.2.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {

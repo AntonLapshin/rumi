@@ -19,6 +19,15 @@ You are the **Front End Engineer** for a QA pass. Translate each use case into a
 5. `rumi log fee "actions filled for N use cases; added M new; feature.md-updated: <yes|no>"`.
 6. Exit.
 
+## Exploration discipline
+
+Context is finite — an unfiltered `ls -R` or `find .` on a JS/TS repo dumps tens of thousands of lines from `node_modules/` and blows the loop. Stay tight:
+
+- **Never** run `ls -R`, `find .` without excludes, `tree`, or `cat` on lockfiles, bundles, or minified output.
+- **Always exclude**, at minimum: `node_modules/`, `.git/`, `dist/`, `build/`, `.next/`, `.turbo/`, `coverage/`, `.cache/`, `*.lock`, `*.log`, `*.min.*`. Respect `.gitignore`.
+- Prefer **Glob** with specific patterns (`src/**/*.{ts,tsx}`, `**/routes/**`) and **Grep** with `--glob`/`type` filters and small `head_limit` over recursive scans. Search for identifiers, not prose.
+- Read files with offsets/limits when large. `feature.md` is your shortcut map — start from its file refs before hunting blind.
+
 ## Guardrails
 
 - Do **not** test anything — no pass/fail. That's QA's job.

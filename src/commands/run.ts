@@ -9,12 +9,6 @@ import { buildRunnerArgs, detectRunner, Runner, runnerBinary } from "../lib/runn
 import { Config, readConfig } from "../lib/config.js";
 import { normalize } from "../lib/normalize.js";
 import { scaffoldE2eSpec } from "../lib/e2e-scaffold.js";
-import {
-  assertDockerAvailable,
-  isInsideContainer,
-  runEphemeral,
-  sanitizeContainerName,
-} from "../lib/docker.js";
 
 export interface RunOptions {
   runner?: string;
@@ -25,48 +19,6 @@ export interface RunOptions {
 type PersonaRole = "pm" | "fee" | "qa";
 
 export async function runOrchestrator(sessionDir: string, opts: RunOptions = {}): Promise<Session> {
-  if (!isInsideContainer()) {
-    return runOrchestratorInDocker(sessionDir, opts);
-  }
-  return runOrchestratorLocal(sessionDir, opts);
-}
-
-async function runOrchestratorInDocker(sessionDir: string, opts: RunOptions): Promise<Session> {
-  await assertDockerAvailable();
-  const projectRoot = opts.projectRoot ?? findProjectRoot(sessionDir);
-  const config = readConfig(projectRoot);
-  const runner = await detectRunner(opts.runner ?? config.runner ?? undefined);
-
-  const rel = path.relative(projectRoot, sessionDir);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error(`session directory must live under the project root (got ${sessionDir})`);
-  }
-  const containerSession = path.posix.join("/work", rel.split(path.sep).join("/"));
-  const name = sanitizeContainerName(`rumi-run-${path.basename(sessionDir)}`);
-
-  const runArgs = ["run", containerSession, "--runner", runner, "--project-root", "/work"];
-  if (opts.maxIterations != null) runArgs.push("--max-iterations", String(opts.maxIterations));
-
-  appendLog(sessionDir, "system", `launching docker container ${name} (image=${config.image})`);
-
-  const res = await runEphemeral({
-    image: config.image,
-    containerName: name,
-    projectRoot,
-    cmd: runArgs,
-    env: {
-      RUMI_RUNNER: runner,
-      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-    },
-  });
-
-  if (res.timedOut) appendLog(sessionDir, "system", `⚠ container ${name} killed (outer timeout)`);
-  if ((res.exitCode ?? 0) !== 0) appendLog(sessionDir, "system", `⚠ container ${name} exited ${res.exitCode}`);
-
-  return readSession(sessionDir);
-}
-
-async function runOrchestratorLocal(sessionDir: string, opts: RunOptions): Promise<Session> {
   const projectRoot = opts.projectRoot ?? findProjectRoot(sessionDir);
   const config = readConfig(projectRoot);
   const runner = await detectRunner(opts.runner ?? config.runner ?? undefined);
@@ -80,7 +32,6 @@ async function runOrchestratorLocal(sessionDir: string, opts: RunOptions): Promi
 
   // Normalize whatever state is already on disk (resume case).
   let session = writeAndReturn(sessionDir, normalize(readSession(sessionDir)));
-  await preflightUrlReachable(sessionDir, session.url);
 
   let iter = 0;
 
@@ -244,7 +195,6 @@ function buildPersonaPrompt(
   const sessionUrl = (() => {
     try { return JSON.parse(sessionJson).url as string; } catch { return ""; }
   })();
-  const browserUrl = toBrowserUrl(sessionUrl);
 
   const lines = [
     template.trim(),
@@ -257,9 +207,8 @@ function buildPersonaPrompt(
     `- e2e/ directory: \`${path.join(sessionDir, "e2e")}\``,
     `- logs.txt path: \`${path.join(sessionDir, "logs.txt")}\``,
     "",
-    "## URLs",
-    `- Browser URL (use for every \`playwright-cli open\`/\`goto\` call): \`${browserUrl}\``,
-    `- Spec URL (already written into \`e2e/*.test.ts\` by the orchestrator): \`${sessionUrl}\``,
+    "## URL",
+    `- \`${sessionUrl}\``,
   ];
 
   if (role === "qa") {
@@ -285,62 +234,4 @@ function buildPersonaPrompt(
 function findProjectRoot(sessionDir: string): string {
   // session dir is <projectRoot>/rumi/<slug>
   return path.resolve(sessionDir, "..", "..");
-}
-
-// Rewrite localhost/127.0.0.1 URLs so they resolve to the host from inside the
-// container. Used both for the orchestrator's own preflight and for the URL we
-// hand personas to point their browser at. Keeps the substitution in one place
-// so the two can't drift.
-export function toBrowserUrl(rawUrl: string): string {
-  try {
-    const u = new URL(rawUrl);
-    if (u.hostname === "localhost" || u.hostname === "127.0.0.1") {
-      u.hostname = "host.docker.internal";
-    }
-    return u.toString();
-  } catch {
-    return rawUrl;
-  }
-}
-
-async function preflightUrlReachable(sessionDir: string, rawUrl: string): Promise<void> {
-  let probeUrl: string;
-  try {
-    new URL(rawUrl);
-    probeUrl = toBrowserUrl(rawUrl);
-  } catch {
-    return; // malformed URL; let the personas surface the real error
-  }
-
-  const ok = await probeHttp(probeUrl);
-  if (ok) {
-    appendLog(sessionDir, "orchestrator", `preflight: ${probeUrl} reachable`);
-    return;
-  }
-
-  const hint =
-    rawUrl.includes("localhost") || rawUrl.includes("127.0.0.1")
-      ? "Your dev server is likely bound to 127.0.0.1 only, which refuses connections from Docker. " +
-        "Restart it with `--host` so it binds all interfaces (Vite: `npm run dev -- --host`; Next.js: `next dev -H 0.0.0.0`)."
-      : `${rawUrl} is not reachable from inside the container — confirm it's up and accepting connections from Docker.`;
-
-  const msg = `⚠ preflight: ${probeUrl} refused connection. ${hint}`;
-  appendLog(sessionDir, "orchestrator", msg);
-  console.error(msg);
-}
-
-function probeHttp(url: string): Promise<boolean> {
-  return new Promise(async (resolve) => {
-    try {
-      const mod = url.startsWith("https:") ? await import("node:https") : await import("node:http");
-      const req = mod.get(url, { timeout: 3000 }, (res) => {
-        res.resume();
-        resolve(true);
-      });
-      req.on("timeout", () => { req.destroy(); resolve(false); });
-      req.on("error", () => resolve(false));
-    } catch {
-      resolve(false);
-    }
-  });
 }

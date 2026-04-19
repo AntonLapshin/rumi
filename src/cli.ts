@@ -34,8 +34,7 @@ program
   .description("Serve the progress dashboard from <projectRoot>/rumi")
   .option("--project-root <path>", "override project root (defaults to cwd)")
   .option("--port <number>", "port (default 3737)", (v) => Number(v), 3737)
-  .option("--background", "detach and run in the background", false)
-  .action(async (options: { projectRoot?: string; port: number; background: boolean }) => {
+  .action(async (options: { projectRoot?: string; port: number }) => {
     await runServe(options);
   });
 
@@ -54,17 +53,52 @@ program
   });
 
 program
+  .command("qa")
+  .description("One-shot: init a session for <url>, run the orchestrator loop, print summary")
+  .argument("<url>", "URL to QA")
+  .option("--runner <claude|opencode>", "force a specific runner")
+  .option("--project-root <path>", "override project root (defaults to cwd)")
+  .option("--max-iterations <n>", "safety cap (default 12)", (v) => Number(v), 12)
+  .option("--no-dashboard", "skip auto-starting the dashboard on :3737")
+  .option("--port <number>", "dashboard port (default 3737)", (v) => Number(v), 3737)
+  .action(async (
+    url: string,
+    options: {
+      runner?: string;
+      projectRoot?: string;
+      maxIterations: number;
+      dashboard: boolean;
+      port: number;
+    },
+  ) => {
+    const dir = await runInit(url, {
+      projectRoot: options.projectRoot,
+      startDashboard: options.dashboard,
+      dashboardPort: options.port,
+    });
+    console.log(`Session: ${dir}`);
+    console.log(`Dashboard: http://localhost:${options.port}`);
+    const final = await runOrchestrator(dir, {
+      runner: options.runner,
+      projectRoot: options.projectRoot,
+      maxIterations: options.maxIterations,
+    });
+    const passed = final.useCases.filter((u) => u.status === "passed").length;
+    const failed = final.useCases.filter((u) => u.status === "failed").length;
+    const blocked = final.useCases.filter((u) => u.status === "blocked").length;
+    console.log(
+      `\nrumi complete — ${passed} passed, ${failed} failed, ${blocked} blocked, status=${final.status}`,
+    );
+  });
+
+program
   .command("install")
   .description("Install /rumi slash command and playwright-cli skill into the current project")
   .option("--project-root <path>", "override project root (defaults to cwd)")
   .option("--skip-playwright", "do not run `playwright-cli install-skills`", false)
-  .option("--image <tag>", "docker image tag to use (overrides config)")
-  .option("--skip-image", "skip docker image availability check/pull", false)
   .action(async (options: {
     projectRoot?: string;
     skipPlaywright: boolean;
-    image?: string;
-    skipImage: boolean;
   }) => {
     await runInstall(options);
   });

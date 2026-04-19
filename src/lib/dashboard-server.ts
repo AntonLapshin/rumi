@@ -26,6 +26,20 @@ export function startDashboardServer(opts: DashboardServerOptions): http.Server 
       let rel = decodeURIComponent(url.pathname).replace(/^\/+/, "");
       if (rel === "" || rel === "index.html") rel = "index.html";
 
+      if (rel === "__shutdown") {
+        // Loopback-only: the caller is `rumi init` asking us to exit so it
+        // can spawn a fresh dashboard on the same port.
+        const remote = req.socket.remoteAddress ?? "";
+        if (req.method !== "POST" || !isLoopback(remote)) {
+          res.statusCode = 403;
+          return res.end("forbidden");
+        }
+        res.end("ok");
+        server.close(() => process.exit(0));
+        setTimeout(() => process.exit(0), 1000).unref();
+        return;
+      }
+
       if (STATIC_NAMES.has(rel)) {
         return sendFile(res, path.join(assetsDir, rel));
       }
@@ -60,6 +74,10 @@ function sendFile(res: http.ServerResponse, filePath: string): void {
     res.setHeader("Cache-Control", "no-store");
     fs.createReadStream(filePath).pipe(res);
   });
+}
+
+function isLoopback(addr: string): boolean {
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
 function contentType(filePath: string): string {

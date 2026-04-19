@@ -18,7 +18,7 @@ Run:
 rumi init "<url>"
 ```
 
-Capture the **last line of stdout** — that's the absolute path to the session directory. Store it as `SESSION`. `rumi init` also auto-starts the dashboard on port 3737 (idempotent — skipped if it's already up). Tell the user: "Dashboard: http://localhost:3737".
+Capture the **last line of stdout** — that's the absolute path to the session directory. Store it as `SESSION`. `rumi init` also (re)starts the dashboard on port 3737 — any existing rumi dashboard on that port is shut down and replaced with a fresh process. Tell the user: "Dashboard: http://localhost:3737".
 
 ## 3. Run the persona loop
 

@@ -1,21 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execa } from "execa";
-import { packageRoot, templateDir } from "../lib/paths.js";
-import { DEFAULT_IMAGE, readConfig, writeDefaultConfigIfMissing } from "../lib/config.js";
-import { assertDockerAvailable, imageExistsLocally, pullImage } from "../lib/docker.js";
+import { templateDir } from "../lib/paths.js";
+import { writeDefaultConfigIfMissing } from "../lib/config.js";
 
 export interface InstallOptions {
   projectRoot?: string;
   skipPlaywright?: boolean;
-  image?: string;
-  skipImage?: boolean;
 }
 
 export async function runInstall(opts: InstallOptions = {}): Promise<void> {
   const projectRoot = opts.projectRoot ?? process.cwd();
-
-  await assertDockerAvailable();
 
   const claudeCmdDir = path.join(projectRoot, ".claude", "commands");
   const opencodeCmdDir = path.join(projectRoot, ".opencode", "command");
@@ -26,17 +21,12 @@ export async function runInstall(opts: InstallOptions = {}): Promise<void> {
 
   writeDefaultConfigIfMissing(projectRoot);
 
-  const image = opts.image ?? readConfig(projectRoot).image;
-  if (!opts.skipImage) {
-    await ensureImage(image);
-  }
-
   if (opts.skipPlaywright) {
     console.log("↷ skipped playwright-cli skill install");
     return;
   }
 
-  await installPlaywrightSkills(projectRoot, image);
+  await installPlaywrightSkills(projectRoot);
   mirrorSkillToOpencode(projectRoot);
 }
 
@@ -49,57 +39,18 @@ function writeCommand(claudeCmdDir: string, opencodeCmdDir: string, name: string
   console.log(`✔ wrote ${path.join(".opencode", "command", `${name}.md`)}`);
 }
 
-async function ensureImage(image: string): Promise<void> {
-  if (await imageExistsLocally(image)) {
-    console.log(`✔ docker image ${image} present locally`);
-    return;
-  }
-  if (image === DEFAULT_IMAGE) {
-    await buildDefaultImage(image);
-    return;
-  }
-  console.log(`→ docker pull ${image}`);
-  await pullImage(image);
-}
-
-async function buildDefaultImage(image: string): Promise<void> {
-  const context = packageRoot();
-  const dockerfile = path.join(context, "Dockerfile");
-  if (!fs.existsSync(dockerfile)) {
-    throw new Error(
-      `docker image "${image}" not found locally and no Dockerfile at ${dockerfile}.\n` +
-        `This rumi install was packed without build context — install from a clone (\`npm install -g /path/to/rumi\`), or set "image" in rumi/config.json to a published tag.`,
+async function installPlaywrightSkills(projectRoot: string): Promise<void> {
+  console.log("→ running `playwright-cli install --skills=claude`…");
+  const res = await execa("playwright-cli", ["install", "--skills=claude"], {
+    cwd: projectRoot,
+    stdio: "inherit",
+    reject: false,
+  });
+  if (res.exitCode !== 0) {
+    console.warn(
+      "⚠ playwright-cli install --skills=claude exited non-zero. " +
+        "Ensure `@playwright/cli` is on PATH (`npm install -g @playwright/cli`).",
     );
-  }
-  console.log(`→ docker build -t ${image} ${context}  (first run — ~1.5 GB; downloads Chromium)`);
-  const res = await execa("docker", ["build", "-t", image, context], { stdio: "inherit", reject: false });
-  if (res.exitCode !== 0) {
-    throw new Error(`docker build failed (exit ${res.exitCode})`);
-  }
-  console.log(`✔ built ${image}`);
-}
-
-async function installPlaywrightSkills(projectRoot: string, image: string): Promise<void> {
-  console.log("→ running `playwright-cli install --skills=claude` inside the container…");
-  const res = await execa(
-    "docker",
-    [
-      "run",
-      "--rm",
-      "--entrypoint",
-      "playwright-cli",
-      "-v",
-      `${projectRoot}:/work`,
-      "-w",
-      "/work",
-      image,
-      "install",
-      "--skills=claude",
-    ],
-    { reject: false, stdio: "inherit" },
-  );
-  if (res.exitCode !== 0) {
-    console.warn("⚠ playwright-cli install --skills=claude exited non-zero; continuing.");
   }
 }
 

@@ -55,7 +55,10 @@ export async function runInit(url: string, opts: InitOptions = {}): Promise<stri
   if (opts.startDashboard !== false) {
     const port = opts.dashboardPort ?? readConfig(projectRoot).dashboardPort;
     try {
-      const state = await ensureDashboard(projectRoot, port);
+      // `rumi init` is the entry point for every `/rumi URL` invocation —
+      // restart the dashboard so each session starts against a fresh process
+      // (picks up any dashboard asset changes, clears stale server state).
+      const state = await ensureDashboard(projectRoot, port, { forceRestart: true });
       const summary = describeDashboard(state);
       console.error(summary); // stderr so stdout stays clean for session-path capture
       appendLog(dir, "system", summary.replace(/^\W+\s*/, ""));

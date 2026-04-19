@@ -3,13 +3,10 @@ import path from "node:path";
 import { z } from "zod";
 import { projectRumiRoot } from "./paths.js";
 
-export const DEFAULT_IMAGE = "rumi:local";
-
 export const configSchema = z
   .object({
     dashboardPort: z.number().int().min(1).max(65535).default(3737),
     runner: z.enum(["claude", "opencode"]).nullable().default(null),
-    image: z.string().min(1).default(DEFAULT_IMAGE),
     timeouts: z
       .object({
         personaRunMs: z.number().int().min(60_000).default(1_800_000),
