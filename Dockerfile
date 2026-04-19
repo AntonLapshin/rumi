@@ -2,7 +2,8 @@ FROM node:20-bookworm
 
 ENV RUMI_IN_CONTAINER=1 \
     DEBIAN_FRONTEND=noninteractive \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
+    HOME=/home/node
 
 # 1) Node CLIs: Claude Code, OpenCode, playwright-cli.
 RUN npm install -g @anthropic-ai/claude-code opencode-ai @playwright/cli
@@ -27,5 +28,14 @@ RUN npm ci \
  && npm run build \
  && npm install -g .
 
+# 4) Non-root runtime user. The base image ships a `node` user at UID 1000
+#    with a writable /home/node — we reuse it. Credential bind mounts land in
+#    /home/node/.{claude,opencode}; /work is the bind-mounted host project
+#    (host uid governs write perms on Linux; macOS/Docker Desktop bind mounts
+#    are uid-transparent).
+RUN mkdir -p /home/node/.claude /home/node/.opencode \
+ && chown -R node:node /home/node /opt/playwright
+
+USER node
 WORKDIR /work
 ENTRYPOINT ["rumi"]

@@ -13,7 +13,11 @@ export function writeSession(sessionDir: string, session: Session): void {
   const file = sessionJsonPath(sessionDir);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const validated = sessionSchema.parse(session);
-  fs.writeFileSync(file, JSON.stringify(validated, null, 2) + "\n", "utf8");
+  // Atomic write: tmp + rename keeps readers from ever seeing a half-written file
+  // and survives a crash mid-write (the original stays intact until the rename).
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(validated, null, 2) + "\n", "utf8");
+  fs.renameSync(tmp, file);
 }
 
 export function tryReadSession(sessionDir: string): Session | null {

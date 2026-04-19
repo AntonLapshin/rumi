@@ -62,10 +62,25 @@ export function baseMounts(opts: BaseMountOptions): string[] {
   const args: string[] = ["-v", `${opts.projectRoot}:/work`];
   if (opts.authMounts !== false) {
     const home = os.homedir();
-    const claudeHost = path.join(home, ".claude");
-    const opencodeHost = path.join(home, ".opencode");
-    if (fs.existsSync(claudeHost)) args.push("-v", `${claudeHost}:/root/.claude`);
-    if (fs.existsSync(opencodeHost)) args.push("-v", `${opencodeHost}:/root/.opencode`);
+    // Mount only the credential files, read-only. We deliberately do NOT
+    // mount the whole ~/.claude or ~/.opencode dirs:
+    //   - rw would expose conversation history, project notes, and sessions
+    //     across every repo to every persona.
+    //   - :ro on the whole dir would break Claude Code's own writes
+    //     (projects/, sessions/, history.jsonl).
+    // The credential file is all a headless child actually needs; Claude
+    // Code's own session state then lives inside the ephemeral container
+    // and vanishes with --rm. On macOS this mount is typically absent
+    // (auth lives in Keychain) — in that case the child authenticates via
+    // ANTHROPIC_API_KEY from the environment instead.
+    const claudeCreds = path.join(home, ".claude", ".credentials.json");
+    if (fs.existsSync(claudeCreds)) {
+      args.push("-v", `${claudeCreds}:/home/node/.claude/.credentials.json:ro`);
+    }
+    const opencodeAuth = path.join(home, ".opencode", "auth.json");
+    if (fs.existsSync(opencodeAuth)) {
+      args.push("-v", `${opencodeAuth}:/home/node/.opencode/auth.json:ro`);
+    }
   }
   return args;
 }
@@ -116,7 +131,10 @@ export async function runEphemeral(opts: RunEphemeralOptions): Promise<RunResult
     ...envArgs(opts.env ?? {}),
   ];
   for (const p of opts.ports ?? []) {
-    args.push("-p", `${p.host}:${p.container}`);
+    // Bind on host loopback only — prevents other machines on the LAN/Wi‑Fi
+    // from reaching the published port. The server inside the container still
+    // listens on 0.0.0.0 so Docker's port forwarding can reach it.
+    args.push("-p", `127.0.0.1:${p.host}:${p.container}`);
   }
   args.push(opts.image, ...opts.cmd);
 
@@ -169,7 +187,7 @@ export async function runDetached(opts: RunDetachedOptions): Promise<void> {
   ];
   if (opts.restart) args.push("--restart", opts.restart);
   for (const p of opts.ports ?? []) {
-    args.push("-p", `${p.host}:${p.container}`);
+    args.push("-p", `127.0.0.1:${p.host}:${p.container}`);
   }
   args.push(opts.image, ...opts.cmd);
 
