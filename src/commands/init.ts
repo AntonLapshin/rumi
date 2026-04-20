@@ -10,6 +10,7 @@ import { appendLog } from "../lib/logger.js";
 import { describeDashboard, ensureDashboard } from "./serve.js";
 import { readConfig, writeDefaultConfigIfMissing } from "../lib/config.js";
 import { normalize } from "../lib/normalize.js";
+import { scaffoldFeatureMd } from "../lib/feature-md.js";
 
 export interface InitOptions {
   projectRoot?: string;
@@ -45,6 +46,10 @@ export async function runInit(url: string, opts: InitOptions = {}): Promise<stri
       appendLog(dir, "system", `session resumed (status=${existing.status}, useCases=${existing.useCases.length})`);
     }
   }
+
+  // Pre-write the feature.md skeleton so PM just fills sections. Never
+  // overwrite an existing one on resume.
+  scaffoldFeatureMd(dir);
 
   updateSessionsIndex(projectRoot);
 

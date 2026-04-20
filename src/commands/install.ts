@@ -20,6 +20,7 @@ export async function runInstall(opts: InstallOptions = {}): Promise<void> {
   writeCommand(claudeCmdDir, opencodeCmdDir, "rumi");
 
   writeDefaultConfigIfMissing(projectRoot);
+  mergeClaudeSettings(projectRoot);
 
   if (opts.skipPlaywright) {
     console.log("↷ skipped playwright-cli skill install");
@@ -50,6 +51,59 @@ async function installPlaywrightSkills(projectRoot: string): Promise<void> {
     console.warn(
       "⚠ playwright-cli install --skills=claude exited non-zero. " +
         "Ensure `@playwright/cli` is on PATH (`npm install -g @playwright/cli`).",
+    );
+  }
+}
+
+// Deny-list rules the persona prompts used to recite. Pushing these into
+// .claude/settings.json means the harness enforces them — the prompt can be
+// shorter and smaller models can't violate the rule even if they forget it.
+const RUMI_DENY_RULES = [
+  "Bash(ls -R:*)",
+  "Bash(ls -la:*)",
+  "Bash(find . -type:*)",
+  "Bash(find .:*)",
+  "Bash(tree:*)",
+  "Read(**/node_modules/**)",
+  "Read(**/dist/**)",
+  "Read(**/build/**)",
+  "Read(**/.next/**)",
+  "Read(**/.turbo/**)",
+  "Read(**/coverage/**)",
+  "Read(**/*.lock)",
+  "Read(**/*.min.*)",
+];
+
+function mergeClaudeSettings(projectRoot: string): void {
+  const file = path.join(projectRoot, ".claude", "settings.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let existing: Record<string, unknown> = {};
+  if (fs.existsSync(file)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (e) {
+      console.warn(
+        `⚠ ${path.relative(projectRoot, file)} invalid (${(e as Error).message}); leaving as-is`,
+      );
+      return;
+    }
+  }
+  const permissions =
+    (existing.permissions as Record<string, unknown> | undefined) ?? {};
+  const deny = new Set(((permissions.deny as string[] | undefined) ?? []));
+  let added = 0;
+  for (const rule of RUMI_DENY_RULES) {
+    if (!deny.has(rule)) {
+      deny.add(rule);
+      added++;
+    }
+  }
+  permissions.deny = [...deny];
+  existing.permissions = permissions;
+  fs.writeFileSync(file, JSON.stringify(existing, null, 2) + "\n", "utf8");
+  if (added > 0) {
+    console.log(
+      `✔ merged ${added} deny rule(s) into ${path.relative(projectRoot, file)}`,
     );
   }
 }

@@ -137,7 +137,8 @@ Re-running `rumi init` never overwrites a user-edited `config.json`. CLI flags (
 | `rumi install [--skip-playwright]` | Wire `/rumi` into the current project, write default config, and install the `playwright-cli` skill. |
 | `rumi init <url>` | Scaffold a session dir for `<url>`. Idempotent — re-running on the same URL resumes the existing session. Prints the session path on the last line of stdout. |
 | `rumi serve [--port <n>]` | Run the dashboard HTTP server on `:3737` (foreground). |
-| `rumi run <session> [--runner claude\|opencode] [--max-iterations N]` | Run the orchestrator loop (PM → FEE → QA) in-process. |
+| `rumi run <session> [--runner claude\|opencode] [--max-iterations N]` | Run the orchestrator loop (PM → FEE → QA) in-process. Cap auto-scales with use case count (`max(12, useCases*3 + 5)`) unless `--max-iterations` is set. |
+| `rumi session <subcommand>` | Mutate or inspect `session.json` without editing it by hand. Subcommands: `set-description`, `add-use-case`, `add-action`, `set-actions`, `record-result`, `dump`, `validate`, `scaffold-feature-md`, `lint-feature-md`. |
 | `rumi log <persona> <message>` | Append a timestamped line to the active session's `logs.txt`. Used by child personas. |
 
 ## Design notes
