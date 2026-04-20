@@ -1,9 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import {
-  projectRumiRoot,
-  sessionDir,
-} from "../lib/paths.js";
+import { projectRumiRoot, sessionDir } from "../lib/paths.js";
 import { emptySession, Session } from "../lib/schema.js";
 import { writeSession, tryReadSession } from "../lib/session-io.js";
 import { appendLog } from "../lib/logger.js";
@@ -18,7 +15,10 @@ export interface InitOptions {
   dashboardPort?: number;
 }
 
-export async function runInit(url: string, opts: InitOptions = {}): Promise<string> {
+export async function runInit(
+  url: string,
+  opts: InitOptions = {},
+): Promise<string> {
   try {
     new URL(url);
   } catch {
@@ -43,7 +43,11 @@ export async function runInit(url: string, opts: InitOptions = {}): Promise<stri
         `session resumed (status=${existing.status}, useCases=${existing.useCases.length}); requeued ${revived.count} blocked use case(s)`,
       );
     } else {
-      appendLog(dir, "system", `session resumed (status=${existing.status}, useCases=${existing.useCases.length})`);
+      appendLog(
+        dir,
+        "system",
+        `session resumed (status=${existing.status}, useCases=${existing.useCases.length})`,
+      );
     }
   }
 
@@ -63,7 +67,9 @@ export async function runInit(url: string, opts: InitOptions = {}): Promise<stri
       // `rumi init` is the entry point for every `/rumi URL` invocation —
       // restart the dashboard so each session starts against a fresh process
       // (picks up any dashboard asset changes, clears stale server state).
-      const state = await ensureDashboard(projectRoot, port, { forceRestart: true });
+      const state = await ensureDashboard(projectRoot, port, {
+        forceRestart: true,
+      });
       const summary = describeDashboard(state);
       console.error(summary); // stderr so stdout stays clean for session-path capture
       appendLog(dir, "system", summary.replace(/^\W+\s*/, ""));
@@ -85,7 +91,7 @@ export async function runInit(url: string, opts: InitOptions = {}): Promise<stri
 function reviveBlocked(s: Session): { session: Session; count: number } {
   let count = 0;
   for (const uc of s.useCases) {
-    if (uc.status === "blocked") {
+    if (uc.status === "blocked" || uc.status === "failed") {
       uc.status = (uc.actions?.length ?? 0) > 0 ? "ready" : "draft";
       delete uc.reason;
       count++;
@@ -111,5 +117,9 @@ function updateSessionsIndex(projectRoot: string) {
   }
 
   sessions.sort((a, b) => a.slug.localeCompare(b.slug));
-  fs.writeFileSync(path.join(rumiRoot, "sessions.json"), JSON.stringify(sessions, null, 2) + "\n", "utf8");
+  fs.writeFileSync(
+    path.join(rumiRoot, "sessions.json"),
+    JSON.stringify(sessions, null, 2) + "\n",
+    "utf8",
+  );
 }
