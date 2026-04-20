@@ -3,8 +3,15 @@ import path from "node:path";
 import { readSession, writeSession } from "../lib/session-io.js";
 import { normalize } from "../lib/normalize.js";
 import { projectRumiRoot, slugify } from "../lib/paths.js";
-import { appendLog } from "../lib/logger.js";
-import { Session, UseCase, useCaseStatusSchema } from "../lib/schema.js";
+import { appendLog, appendLogEvent } from "../lib/logger.js";
+import {
+  Action,
+  ActionObject,
+  actionObjectSchema,
+  Session,
+  UseCase,
+  useCaseStatusSchema,
+} from "../lib/schema.js";
 import { lintFeatureMd, scaffoldFeatureMd } from "../lib/feature-md.js";
 
 // Narrow, CLI-driven mutations on session.json. Personas call these instead
@@ -63,6 +70,26 @@ function logAction(opts: BaseOpts, msg: string): void {
   }
 }
 
+function logEvent(
+  opts: BaseOpts,
+  event: string,
+  message: string,
+  fields?: Record<string, unknown>,
+): void {
+  try {
+    const dir = resolveSessionDir(opts);
+    appendLogEvent(
+      dir,
+      opts.persona ?? process.env.RUMI_ROLE ?? "system",
+      event,
+      message,
+      fields,
+    );
+  } catch {
+    // best-effort
+  }
+}
+
 function findUseCase(s: Session, id: string): UseCase {
   const uc = s.useCases.find((u) => u.id === id);
   if (!uc) {
@@ -79,7 +106,9 @@ export function runSetDescription(text: string, opts: BaseOpts = {}): void {
   mutate(opts, (s) => {
     s.description = text.trim();
   });
-  logAction(opts, `set description (${text.length} chars)`);
+  logEvent(opts, "set-description", `set description (${text.length} chars)`, {
+    length: text.length,
+  });
   console.log("ok");
 }
 
@@ -116,7 +145,10 @@ export function runAddUseCase(opts: AddUseCaseOpts): void {
     const uc = s.useCases.find((u) => slugify(u.title) === slugify(title));
     assignedId = uc?.id ?? slugify(title);
   }
-  logAction(opts, `add-use-case ${assignedId}: ${title}`);
+  logEvent(opts, "add-use-case", `add-use-case ${assignedId}: ${title}`, {
+    id: assignedId,
+    title,
+  });
   console.log(assignedId);
 }
 
@@ -124,26 +156,41 @@ export function runAddUseCase(opts: AddUseCaseOpts): void {
 
 export interface AddActionOpts extends BaseOpts {
   useCaseId: string;
-  text: string;
+  // Either a free-text prose step (legacy) or a typed action object.
+  text?: string;
+  typed?: ActionObject;
 }
 
 const ACTION_MIN = 5;
 const ACTION_MAX = 15;
 
 export function runAddAction(opts: AddActionOpts): void {
-  const text = opts.text?.trim();
-  if (!text) throw new Error("action text is empty");
-  if (text.length > 300) throw new Error("action too long (>300 chars); tighten it");
+  const action: Action | null = opts.typed
+    ? (actionObjectSchema.parse(opts.typed) as Action)
+    : opts.text
+      ? opts.text.trim()
+      : null;
+  if (!action) throw new Error("provide either a text step or a --<type> flag");
+  if (typeof action === "string" && action.length > 300) {
+    throw new Error("action too long (>300 chars); tighten it");
+  }
+
+  let summary = "";
   mutate(opts, (s) => {
     const uc = findUseCase(s, opts.useCaseId);
-    uc.actions = [...(uc.actions ?? []), text];
+    uc.actions = [...(uc.actions ?? []), action];
     if (uc.actions.length > ACTION_MAX) {
       throw new Error(
         `use case "${opts.useCaseId}" has ${uc.actions.length} actions; cap is ${ACTION_MAX}`,
       );
     }
+    summary = typeof action === "string" ? action : `[${action.type}]`;
   });
-  logAction(opts, `add-action ${opts.useCaseId}: ${text}`);
+  logEvent(opts, "add-action", `add-action ${opts.useCaseId}: ${summary}`, {
+    useCaseId: opts.useCaseId,
+    typed: typeof action !== "string",
+    type: typeof action === "string" ? null : action.type,
+  });
   console.log("ok");
 }
 
@@ -151,11 +198,15 @@ export function runAddAction(opts: AddActionOpts): void {
 
 export interface SetActionsOpts extends BaseOpts {
   useCaseId: string;
-  actions: string[];
+  // Either strings or typed action objects. The union is validated against
+  // actionSchema on write.
+  actions: Action[];
 }
 
 export function runSetActions(opts: SetActionsOpts): void {
-  const actions = (opts.actions ?? []).map((a) => a.trim()).filter(Boolean);
+  const actions: Action[] = (opts.actions ?? [])
+    .map((a) => (typeof a === "string" ? a.trim() : a))
+    .filter((a) => (typeof a === "string" ? a.length > 0 : true));
   if (actions.length < ACTION_MIN || actions.length > ACTION_MAX) {
     throw new Error(
       `need ${ACTION_MIN}–${ACTION_MAX} actions, got ${actions.length}`,
@@ -165,7 +216,10 @@ export function runSetActions(opts: SetActionsOpts): void {
     const uc = findUseCase(s, opts.useCaseId);
     uc.actions = actions;
   });
-  logAction(opts, `set-actions ${opts.useCaseId}: ${actions.length} steps`);
+  logEvent(opts, "set-actions", `set-actions ${opts.useCaseId}: ${actions.length} steps`, {
+    useCaseId: opts.useCaseId,
+    count: actions.length,
+  });
   console.log("ok");
 }
 
@@ -191,9 +245,11 @@ export function runRecordResult(opts: RecordResultOpts): void {
       uc.reason = opts.reason.trim();
     }
   });
-  logAction(
+  logEvent(
     opts,
+    "record-result",
     `${opts.useCaseId}: ${status}${opts.reason ? ` — ${opts.reason}` : ""}`,
+    { useCaseId: opts.useCaseId, status, reason: opts.reason ?? null },
   );
   console.log("ok");
 }

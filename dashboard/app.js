@@ -52,20 +52,42 @@
 
   async function loadSession(relPath) {
     const sessionUrl = `${relPath}/session.json?_=${Date.now()}`;
-    const logsUrl = `${relPath}/logs.txt?_=${Date.now()}`;
+    const jsonlUrl = `${relPath}/logs.jsonl?_=${Date.now()}`;
+    const txtUrl = `${relPath}/logs.txt?_=${Date.now()}`;
 
     try {
-      const [sr, lr] = await Promise.all([fetch(sessionUrl), fetch(logsUrl)]);
+      const [sr, jr] = await Promise.all([fetch(sessionUrl), fetch(jsonlUrl)]);
       if (!sr.ok) throw new Error(`session.json ${sr.status}`);
       const session = await sr.json();
-      const logs = lr.ok ? await lr.text() : "";
+      let logsText = "";
+      if (jr.ok) {
+        logsText = renderJsonlLogs(await jr.text());
+      } else {
+        const lr = await fetch(txtUrl);
+        logsText = lr.ok ? await lr.text() : "";
+      }
       renderSession(session);
-      renderLogs(logs);
+      renderLogs(logsText);
     } catch (e) {
       $("summary").classList.add("hidden");
       $("use-cases").innerHTML = `<p class="empty">Failed to load session: ${e.message}</p>`;
       $("logs").classList.add("hidden");
     }
+  }
+
+  function renderJsonlLogs(text) {
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    return lines
+      .map((l) => {
+        try {
+          const ev = JSON.parse(l);
+          const tag = ev.event ? `[${ev.event}] ` : "";
+          return `${ev.ts} | ${String(ev.persona || "").toUpperCase()} | ${tag}${ev.message || ""}`;
+        } catch {
+          return l;
+        }
+      })
+      .join("\n");
   }
 
   function renderSession(p) {
@@ -89,7 +111,9 @@
     p.useCases.forEach((uc) => {
       const div = document.createElement("div");
       div.className = "uc";
-      const actions = (uc.actions || []).map((a) => `<li>${escape(a)}</li>`).join("");
+      const actions = (uc.actions || [])
+        .map((a) => `<li>${escape(renderAction(a))}</li>`)
+        .join("");
       div.innerHTML = `
         <div class="uc-head">
           <h3><span class="id">${escape(uc.id)}</span>${escape(uc.title)}</h3>
@@ -107,6 +131,21 @@
     $("logs").classList.remove("hidden");
     const lines = text.split(/\r?\n/).filter(Boolean);
     $("logs-body").textContent = lines.slice(-50).join("\n");
+  }
+
+  function renderAction(a) {
+    if (typeof a === "string") return a;
+    if (!a || typeof a !== "object") return String(a);
+    switch (a.type) {
+      case "goto":         return `Navigate to ${a.url}`;
+      case "click":        return `Click ${a.role} "${a.name}"`;
+      case "fill":         return `Fill "${a.label}" with "${a.value}"`;
+      case "press":        return `Press ${a.key}`;
+      case "wait_for_url": return `Wait for URL ~= ${a.url}`;
+      case "expect_text":  return `Expect text "${a.text}"`;
+      case "expect_role":  return `Expect ${a.role} "${a.name}" visible`;
+      default:             return JSON.stringify(a);
+    }
   }
 
   function escape(s) {

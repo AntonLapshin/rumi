@@ -9,6 +9,9 @@ import { buildRunnerArgs, detectRunner, Runner, runnerBinary } from "../lib/runn
 import { Config, readConfig } from "../lib/config.js";
 import { normalize } from "../lib/normalize.js";
 import { scaffoldE2eSpec } from "../lib/e2e-scaffold.js";
+import { isTypedAction } from "../lib/schema.js";
+import { runExec } from "./exec.js";
+import { runPreflight } from "./preflight.js";
 
 export interface RunOptions {
   runner?: string;
@@ -76,7 +79,78 @@ export async function runOrchestrator(sessionDir: string, opts: RunOptions = {})
       target.status = "testing";
       session = writeAndReturn(sessionDir, session);
       scaffoldE2eSpec(sessionDir, target, session.url, config);
-      await spawnPersona("qa", sessionDir, projectRoot, runner, config, { useCaseId: target.id });
+
+      // Preflight: open the URL + snapshot. Short-circuit by marking the use
+      // case blocked when unreachable. Selector hints are logged for humans
+      // but don't alter state (snapshot format varies; advisory only).
+      try {
+        const pre = await runPreflight({
+          useCaseId: target.id,
+          sessionDir,
+          projectRoot,
+        });
+        if (!pre.reachable) {
+          const s = readSession(sessionDir);
+          const uc = s.useCases.find((u) => u.id === target.id);
+          if (uc) {
+            uc.status = "blocked";
+            uc.reason = pre.error ?? "URL unreachable";
+            session = writeAndReturn(sessionDir, normalize(s));
+            appendLog(
+              sessionDir,
+              "orchestrator",
+              `preflight ${target.id}: unreachable — marked blocked`,
+            );
+          }
+          continue;
+        }
+        if (pre.misses.length > 0) {
+          appendLog(
+            sessionDir,
+            "orchestrator",
+            `preflight ${target.id}: ${pre.misses.length} selector hint(s)`,
+          );
+        }
+      } catch (e) {
+        appendLog(
+          sessionDir,
+          "orchestrator",
+          `⚠ preflight ${target.id} crashed: ${(e as Error).message}; continuing`,
+        );
+      }
+
+      // Fast path: if every action on this use case is typed, the spec is
+      // fully rendered. Run it via `rumi exec` — no QA persona needed.
+      const allTyped =
+        (target.actions?.length ?? 0) > 0 && (target.actions ?? []).every(isTypedAction);
+      let handled = false;
+      if (allTyped) {
+        try {
+          const result = await runExec({
+            useCaseId: target.id,
+            sessionDir,
+            projectRoot,
+          });
+          handled = result.ranSpec;
+          if (handled) {
+            appendLog(
+              sessionDir,
+              "orchestrator",
+              `exec ${target.id}: ${result.status}${result.reason ? ` — ${result.reason}` : ""}`,
+            );
+          }
+        } catch (e) {
+          appendLog(
+            sessionDir,
+            "orchestrator",
+            `⚠ exec ${target.id} crashed: ${(e as Error).message}; falling back to QA persona`,
+          );
+        }
+      }
+
+      if (!handled) {
+        await spawnPersona("qa", sessionDir, projectRoot, runner, config, { useCaseId: target.id });
+      }
       session = writeAndReturn(sessionDir, normalize(readSession(sessionDir)));
 
       // Guard against QA leaving its assigned use case non-terminal (crashed,
