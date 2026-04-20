@@ -1,13 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { projectRumiRoot, sessionDir } from "../lib/paths.js";
-import { emptySession, Session } from "../lib/schema.js";
-import { writeSession, tryReadSession } from "../lib/session-io.js";
 import { appendLog } from "../lib/logger.js";
 import { describeDashboard, ensureDashboard } from "./serve.js";
 import { readConfig, writeDefaultConfigIfMissing } from "../lib/config.js";
-import { normalize } from "../lib/normalize.js";
-import { scaffoldFeatureMd } from "../lib/feature-md.js";
 
 export interface InitOptions {
   projectRoot?: string;
@@ -29,31 +25,20 @@ export async function runInit(
   const dir = sessionDir(projectRoot, url);
   fs.mkdirSync(dir, { recursive: true });
 
-  const existing = tryReadSession(dir);
-  if (!existing) {
-    writeSession(dir, emptySession(url));
-    appendLog(dir, "system", `session created for ${url} at ${dir}`);
+  // meta.json is the canonical per-session metadata. It's written once at
+  // init time and never modified after — FEE's draft.json and the per-use-case
+  // tests/*.json carry the actual session progress.
+  const metaFile = path.join(dir, "meta.json");
+  if (!fs.existsSync(metaFile)) {
+    fs.writeFileSync(
+      metaFile,
+      JSON.stringify({ url, createdAt: new Date().toISOString() }, null, 2) + "\n",
+      "utf8",
+    );
+    appendLog(dir, "system", `session created for ${url}`);
   } else {
-    const revived = reviveBlocked(existing);
-    if (revived.count > 0) {
-      writeSession(dir, normalize(revived.session));
-      appendLog(
-        dir,
-        "system",
-        `session resumed (status=${existing.status}, useCases=${existing.useCases.length}); requeued ${revived.count} blocked use case(s)`,
-      );
-    } else {
-      appendLog(
-        dir,
-        "system",
-        `session resumed (status=${existing.status}, useCases=${existing.useCases.length})`,
-      );
-    }
+    appendLog(dir, "system", `session resumed at ${dir}`);
   }
-
-  // Pre-write the feature.md skeleton so PM just fills sections. Never
-  // overwrite an existing one on resume.
-  scaffoldFeatureMd(dir);
 
   updateSessionsIndex(projectRoot);
 
@@ -64,9 +49,6 @@ export async function runInit(
   if (opts.startDashboard !== false) {
     const port = opts.dashboardPort ?? readConfig(projectRoot).dashboardPort;
     try {
-      // `rumi init` is the entry point for every `/rumi URL` invocation —
-      // restart the dashboard so each session starts against a fresh process
-      // (picks up any dashboard asset changes, clears stale server state).
       const state = await ensureDashboard(projectRoot, port, {
         forceRestart: true,
       });
@@ -83,35 +65,18 @@ export async function runInit(
   return dir;
 }
 
-// Re-running `/rumi` on a URL means the user wants another pass. Blocked use
-// cases usually reflect environmental problems (URL unreachable, QA crashed,
-// timeouts) rather than real product defects — requeue them so QA retries
-// on the fresh run. `failed` stays as-is; that's a real assertion failure
-// the user should look at before re-running.
-function reviveBlocked(s: Session): { session: Session; count: number } {
-  let count = 0;
-  for (const uc of s.useCases) {
-    if (uc.status === "blocked" || uc.status === "failed") {
-      uc.status = (uc.actions?.length ?? 0) > 0 ? "ready" : "draft";
-      delete uc.reason;
-      count++;
-    }
-  }
-  return { session: s, count };
-}
-
-function updateSessionsIndex(projectRoot: string) {
+function updateSessionsIndex(projectRoot: string): void {
   const rumiRoot = projectRumiRoot(projectRoot);
   const sessions: { slug: string; path: string; url: string | null }[] = [];
 
   for (const slug of fs.readdirSync(rumiRoot)) {
     const sDir = path.join(rumiRoot, slug);
     if (!fs.statSync(sDir).isDirectory()) continue;
-    const sj = path.join(sDir, "session.json");
-    if (!fs.existsSync(sj)) continue;
+    const metaFile = path.join(sDir, "meta.json");
+    if (!fs.existsSync(metaFile)) continue;
     let url: string | null = null;
     try {
-      url = JSON.parse(fs.readFileSync(sj, "utf8")).url ?? null;
+      url = JSON.parse(fs.readFileSync(metaFile, "utf8")).url ?? null;
     } catch {}
     sessions.push({ slug, path: slug, url });
   }

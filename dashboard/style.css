@@ -25,7 +25,8 @@ select#url-select:focus { outline: none; border-color: #4b5365; }
 .badge.passed { background: #1e4b2c; color: #96e9b2; }
 .badge.failed { background: #5a1f22; color: #ff9aa2; }
 .badge.blocked { background: #4a3912; color: #f5cc6b; }
-.badge.draft { background: #2a2d38; color: #9aa0b4; }
+.badge.pending { background: #2a2d38; color: #9aa0b4; }
+.badge.running { background: #5c4416; color: #ffd48c; }
 
 #description { margin: 4px 0 0; color: #c7cbd6; line-height: 1.5; }
 

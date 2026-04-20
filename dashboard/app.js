@@ -51,14 +51,28 @@
   }
 
   async function loadSession(relPath) {
-    const sessionUrl = `${relPath}/session.json?_=${Date.now()}`;
+    const metaUrl = `${relPath}/meta.json?_=${Date.now()}`;
+    const indexUrl = `${relPath}/tests-index.json?_=${Date.now()}`;
     const jsonlUrl = `${relPath}/logs.jsonl?_=${Date.now()}`;
     const txtUrl = `${relPath}/logs.txt?_=${Date.now()}`;
 
     try {
-      const [sr, jr] = await Promise.all([fetch(sessionUrl), fetch(jsonlUrl)]);
-      if (!sr.ok) throw new Error(`session.json ${sr.status}`);
-      const session = await sr.json();
+      const [mr, ir, jr] = await Promise.all([
+        fetch(metaUrl),
+        fetch(indexUrl),
+        fetch(jsonlUrl),
+      ]);
+      const meta = mr.ok ? await mr.json() : { url: "", createdAt: "" };
+      const index = ir.ok ? await ir.json() : { files: [] };
+
+      const useCases = await Promise.all(
+        index.files.map(async (name) => {
+          const r = await fetch(`${relPath}/tests/${name}?_=${Date.now()}`);
+          if (!r.ok) return null;
+          try { return await r.json(); } catch { return null; }
+        }),
+      );
+
       let logsText = "";
       if (jr.ok) {
         logsText = renderJsonlLogs(await jr.text());
@@ -66,7 +80,8 @@
         const lr = await fetch(txtUrl);
         logsText = lr.ok ? await lr.text() : "";
       }
-      renderSession(session);
+
+      renderSession(meta, useCases.filter(Boolean));
       renderLogs(logsText);
     } catch (e) {
       $("summary").classList.add("hidden");
@@ -90,36 +105,49 @@
       .join("\n");
   }
 
-  function renderSession(p) {
+  function deriveStatus(useCases) {
+    if (useCases.length === 0) return "scoping";
+    const passed = useCases.filter((u) => u.status === "passed").length;
+    const failed = useCases.filter((u) => u.status === "failed").length;
+    const blocked = useCases.filter((u) => u.status === "blocked").length;
+    const running = useCases.filter((u) => u.status === "running").length;
+    const terminal = passed + failed + blocked;
+    if (terminal === useCases.length) return "complete";
+    if (running > 0 || terminal > 0) return "testing";
+    return "ready";
+  }
+
+  function renderSession(meta, useCases) {
     $("summary").classList.remove("hidden");
     const urlEl = $("url");
-    urlEl.href = p.url;
-    urlEl.textContent = p.url;
-    const status = $("status");
-    status.className = `badge ${p.status}`;
-    status.textContent = p.status;
-    $("description").textContent = p.description || "(no description yet)";
+    urlEl.href = meta.url || "#";
+    urlEl.textContent = meta.url || "";
+    const status = deriveStatus(useCases);
+    const statusEl = $("status");
+    statusEl.className = `badge ${status}`;
+    statusEl.textContent = status;
 
-    const passed = p.useCases.filter((u) => u.status === "passed").length;
-    const failed = p.useCases.filter((u) => u.status === "failed").length;
-    const blocked = p.useCases.filter((u) => u.status === "blocked").length;
-    const pending = p.useCases.length - passed - failed - blocked;
-    $("counts").textContent = `${p.useCases.length} total · ${passed} passed · ${failed} failed · ${blocked} blocked · ${pending} pending`;
+    const passed = useCases.filter((u) => u.status === "passed").length;
+    const failed = useCases.filter((u) => u.status === "failed").length;
+    const blocked = useCases.filter((u) => u.status === "blocked").length;
+    const pending = useCases.length - passed - failed - blocked;
+    $("description").textContent = "";
+    $("counts").textContent = `${useCases.length} total · ${passed} passed · ${failed} failed · ${blocked} blocked · ${pending} pending`;
 
     const list = $("use-cases");
     list.innerHTML = "";
-    p.useCases.forEach((uc) => {
+    useCases.forEach((uc) => {
       const div = document.createElement("div");
       div.className = "uc";
       const actions = (uc.actions || [])
-        .map((a) => `<li>${escape(renderAction(a))}</li>`)
+        .map((a) => `<li>${escape(a)}</li>`)
         .join("");
       div.innerHTML = `
         <div class="uc-head">
-          <h3><span class="id">${escape(uc.id)}</span>${escape(uc.title)}</h3>
-          <span class="badge ${uc.status || "draft"}">${uc.status || "draft"}</span>
+          <h3><span class="id">${escape(uc.id)}</span>${escape(uc.name)}</h3>
+          <span class="badge ${uc.status || "pending"}">${uc.status || "pending"}</span>
         </div>
-        <p class="desc">${escape(uc.description)}</p>
+        <p class="desc">${escape(uc.description || "")}</p>
         ${actions ? `<ol>${actions}</ol>` : ""}
         ${uc.reason ? `<div class="reason">✗ ${escape(uc.reason)}</div>` : ""}
       `;
@@ -131,21 +159,6 @@
     $("logs").classList.remove("hidden");
     const lines = text.split(/\r?\n/).filter(Boolean);
     $("logs-body").textContent = lines.slice(-50).join("\n");
-  }
-
-  function renderAction(a) {
-    if (typeof a === "string") return a;
-    if (!a || typeof a !== "object") return String(a);
-    switch (a.type) {
-      case "goto":         return `Navigate to ${a.url}`;
-      case "click":        return `Click ${a.role} "${a.name}"`;
-      case "fill":         return `Fill "${a.label}" with "${a.value}"`;
-      case "press":        return `Press ${a.key}`;
-      case "wait_for_url": return `Wait for URL ~= ${a.url}`;
-      case "expect_text":  return `Expect text "${a.text}"`;
-      case "expect_role":  return `Expect ${a.role} "${a.name}" visible`;
-      default:             return JSON.stringify(a);
-    }
   }
 
   function escape(s) {

@@ -3,209 +3,121 @@ import path from "node:path";
 import { execa } from "execa";
 import { templateDir } from "../lib/paths.js";
 import { appendLog } from "../lib/logger.js";
-import { readSession, writeSession } from "../lib/session-io.js";
-import { Session, UseCase } from "../lib/schema.js";
 import { buildRunnerArgs, detectRunner, Runner, runnerBinary } from "../lib/runner.js";
 import { Config, readConfig } from "../lib/config.js";
-import { normalize } from "../lib/normalize.js";
-import { scaffoldE2eSpec } from "../lib/e2e-scaffold.js";
-import { runPreflight } from "./preflight.js";
+import { splitDraft, draftPath } from "../lib/split-draft.js";
+import {
+  listUseCaseFiles,
+  readUseCase,
+  writeUseCase,
+  isTerminal,
+} from "../lib/tests-io.js";
 
 export interface RunOptions {
   runner?: string;
   projectRoot?: string;
-  maxIterations?: number;
 }
 
-// The safety cap scales with the session's scope: PM (1-2) + FEE (1) + QA
-// (one pass per use case, +1 buffer). A flat cap either starves large runs
-// or lets trivial ones spin. If the caller specifies an explicit number we
-// respect it.
-function computeIterationCap(session: Session): number {
-  const ucs = session.useCases.length || 0;
-  return Math.max(12, ucs * 3 + 5);
+export interface RunSummary {
+  passed: number;
+  failed: number;
+  blocked: number;
+  total: number;
+  status: "complete" | "incomplete";
 }
 
-// PM is split into two focused phases: code research (fills feature.md) and
-// live exploration (fills description + use cases). Keeping each prompt small
-// helps smaller models stay on-task.
-type PersonaRole = "pm-code" | "pm-explore" | "fee" | "qa";
+type PersonaRole = "fee" | "qa";
 
-export async function runOrchestrator(sessionDir: string, opts: RunOptions = {}): Promise<Session> {
+export async function runOrchestrator(
+  sessionDir: string,
+  opts: RunOptions = {},
+): Promise<RunSummary> {
   const projectRoot = opts.projectRoot ?? findProjectRoot(sessionDir);
   const config = readConfig(projectRoot);
   const runner = await detectRunner(opts.runner ?? config.runner ?? undefined);
-  // Normalize the state on disk first so we can size the cap against real
-  // use-case count (important on resume).
-  let session = writeAndReturn(sessionDir, normalize(readSession(sessionDir)));
-  const maxIterations = opts.maxIterations ?? computeIterationCap(session);
 
   appendLog(
     sessionDir,
     "orchestrator",
-    `starting loop (runner=${runner}, projectRoot=${projectRoot}, personaRunMs=${config.timeouts.personaRunMs}, maxIterations=${maxIterations})`,
+    `starting (runner=${runner}, projectRoot=${projectRoot}, personaRunMs=${config.timeouts.personaRunMs})`,
   );
 
-  let iter = 0;
+  const featureMd = path.join(sessionDir, "feature.md");
+  const draft = draftPath(sessionDir);
+  const hasTests = listUseCaseFiles(sessionDir).length > 0;
 
-  while (session.status !== "complete" && iter < maxIterations) {
-    iter++;
-    const next = decideNextPersona(session, sessionDir);
-    if (!next) {
-      session.status = "complete";
-      session = writeAndReturn(sessionDir, session);
-      appendLog(sessionDir, "orchestrator", "all use cases have terminal status — complete");
-      break;
-    }
+  // FEE runs once, up front, unless its outputs already exist (resume).
+  if (!fs.existsSync(featureMd) || (!fs.existsSync(draft) && !hasTests)) {
+    appendLog(sessionDir, "orchestrator", "spawning FEE");
+    await spawnPersona("fee", sessionDir, projectRoot, runner, config);
+  }
 
-    if (next === "qa") {
-      const target = pickNextUseCaseForQa(session);
-      if (!target) {
-        // Shouldn't happen (decideNextPersona said qa) — defensive.
-        session.status = "complete";
-        session = writeAndReturn(sessionDir, session);
-        break;
-      }
+  // Split the draft into per-use-case files. Idempotent; if already split
+  // (resume after kill), draft.json is gone and this is a no-op.
+  if (fs.existsSync(draft)) {
+    const res = splitDraft(sessionDir);
+    appendLog(
+      sessionDir,
+      "orchestrator",
+      `split draft: ${res.created.length} new, ${res.skipped.length} existing`,
+    );
+  }
+
+  // Run QA once per non-terminal use case. Fresh subprocess per file ⇒ fresh
+  // context each time. Files written by prior QAs stay untouched.
+  for (const file of listUseCaseFiles(sessionDir)) {
+    const uc = readUseCase(file);
+    if (isTerminal(uc.status)) continue;
+
+    uc.status = "running";
+    writeUseCase(file, uc);
+    appendLog(sessionDir, "orchestrator", `QA ${uc.id}`);
+
+    await spawnPersona("qa", sessionDir, projectRoot, runner, config, {
+      useCaseFile: file,
+    });
+
+    // Safety: if QA crashed / timed out / ignored the instruction, force-terminal
+    // so the loop doesn't spin and the dashboard doesn't show a stuck "running".
+    const after = readUseCase(file);
+    if (!isTerminal(after.status)) {
+      after.status = "blocked";
+      after.reason = after.reason ?? "QA did not record a result";
+      writeUseCase(file, after);
       appendLog(
         sessionDir,
         "orchestrator",
-        `iteration ${iter}: QA on use case ${target.id}`,
+        `⚠ QA left ${after.id} non-terminal; marked blocked`,
       );
-      // Mark the assigned use case as in-flight before spawning so the
-      // dashboard highlights it and so QA cannot get confused about which
-      // one it's meant to test.
-      target.status = "testing";
-      session = writeAndReturn(sessionDir, session);
-      scaffoldE2eSpec(sessionDir, target, session.url, config);
-
-      // Preflight: is the URL reachable? If not, block immediately — there's
-      // no point spawning QA for a page that won't load. Locator discovery
-      // happens live in the QA persona against the real page.
-      try {
-        const pre = await runPreflight({ sessionDir, projectRoot });
-        if (!pre.reachable) {
-          const s = readSession(sessionDir);
-          const uc = s.useCases.find((u) => u.id === target.id);
-          if (uc) {
-            uc.status = "blocked";
-            uc.reason = pre.error ?? "URL unreachable";
-            session = writeAndReturn(sessionDir, normalize(s));
-            appendLog(
-              sessionDir,
-              "orchestrator",
-              `preflight ${target.id}: unreachable — marked blocked`,
-            );
-          }
-          continue;
-        }
-      } catch (e) {
-        appendLog(
-          sessionDir,
-          "orchestrator",
-          `⚠ preflight ${target.id} crashed: ${(e as Error).message}; continuing`,
-        );
-      }
-
-      await spawnPersona("qa", sessionDir, projectRoot, runner, config, { useCaseId: target.id });
-      session = writeAndReturn(sessionDir, normalize(readSession(sessionDir)));
-
-      // Guard against QA leaving its assigned use case non-terminal (crashed,
-      // timed out, or ignored instructions). Without this, the loop would
-      // re-assign the same UC forever.
-      const after = session.useCases.find((u) => u.id === target.id);
-      if (after && !isTerminal(after)) {
-        after.status = "blocked";
-        if (!after.reason) after.reason = "QA did not record a result";
-        session = writeAndReturn(sessionDir, normalize(session));
-        appendLog(
-          sessionDir,
-          "orchestrator",
-          `⚠ QA left ${target.id} non-terminal; marked blocked`,
-        );
-      }
-      continue;
-    }
-
-    appendLog(sessionDir, "orchestrator", `iteration ${iter}: spawning ${next.toUpperCase()} persona`);
-    const before = session;
-    await spawnPersona(next, sessionDir, projectRoot, runner, config);
-    session = writeAndReturn(sessionDir, normalize(readSession(sessionDir)));
-
-    if (!stateAdvanced(before, session, next, sessionDir)) {
-      appendLog(sessionDir, "orchestrator", `⚠ ${next.toUpperCase()} did not advance state; breaking loop`);
-      break;
     }
   }
 
-  if (iter >= maxIterations && session.status !== "complete") {
-    appendLog(sessionDir, "orchestrator", `⚠ reached max iterations (${maxIterations}); stopping`);
-  }
-
-  return session;
-}
-
-function writeAndReturn(sessionDir: string, s: Session): Session {
-  writeSession(sessionDir, s);
-  return s;
-}
-
-function isTerminal(uc: UseCase): boolean {
-  return uc.status === "passed" || uc.status === "failed" || uc.status === "blocked";
-}
-
-function pickNextUseCaseForQa(s: Session): UseCase | null {
-  // Prefer leftover "testing" (crashed previous run), then "ready"/"draft".
-  const crashed = s.useCases.find((u) => u.status === "testing");
-  if (crashed) return crashed;
-  return (
-    s.useCases.find(
-      (u) => (u.actions?.length ?? 0) > 0 && (u.status === "ready" || u.status === "draft" || !u.status),
-    ) ?? null
+  const summary = summarize(sessionDir);
+  appendLog(
+    sessionDir,
+    "orchestrator",
+    `done — ${summary.passed} passed, ${summary.failed} failed, ${summary.blocked} blocked`,
   );
+  return summary;
 }
 
-function decideNextPersona(s: Session, sessionDir: string): PersonaRole | null {
-  // pm-code: feature.md doesn't exist yet or hasn't been filled beyond the scaffold.
-  if (!featureMdIsFilled(sessionDir)) return "pm-code";
-  // pm-explore: description or use cases missing.
-  if (!s.description || s.description.trim() === "" || s.useCases.length === 0) return "pm-explore";
-  const needsActions = s.useCases.some((uc) => !uc.actions || uc.actions.length === 0);
-  if (needsActions) return "fee";
-  const needsTesting = s.useCases.some(
-    (uc) => uc.status === "ready" || uc.status === "draft" || uc.status === "testing" || !uc.status,
-  );
-  if (needsTesting) return "qa";
-  return null;
-}
-
-function featureMdIsFilled(sessionDir: string): boolean {
-  const p = path.join(sessionDir, "feature.md");
-  if (!fs.existsSync(p)) return false;
-  const text = fs.readFileSync(p, "utf8");
-  // Scaffold starts with `# <Feature Name>` and has a placeholder comment in
-  // every section. Any edit that replaces the title or strips any placeholder
-  // counts as "filled enough" — PM declares done via lint-feature-md.
-  if (text.includes("# <Feature Name>")) return false;
-  // If all top-level placeholder comments are still present, it's untouched.
-  const placeholders = (text.match(/<!--[^]*?-->/g) ?? []).length;
-  return placeholders < 4;
-}
-
-function stateAdvanced(before: Session, after: Session, role: PersonaRole, sessionDir: string): boolean {
-  if (role === "pm-code") {
-    return featureMdIsFilled(sessionDir);
-  }
-  if (role === "pm-explore") {
-    return after.description.trim().length > 0 && after.useCases.length > 0;
-  }
-  // fee
-  const beforeReady = before.useCases.filter((uc) => uc.actions && uc.actions.length > 0).length;
-  const afterReady = after.useCases.filter((uc) => uc.actions && uc.actions.length > 0).length;
-  return afterReady > beforeReady;
+function summarize(sessionDir: string): RunSummary {
+  const ucs = listUseCaseFiles(sessionDir).map((f) => readUseCase(f));
+  const passed = ucs.filter((u) => u.status === "passed").length;
+  const failed = ucs.filter((u) => u.status === "failed").length;
+  const blocked = ucs.filter((u) => u.status === "blocked").length;
+  const terminal = passed + failed + blocked;
+  return {
+    passed,
+    failed,
+    blocked,
+    total: ucs.length,
+    status: ucs.length > 0 && terminal === ucs.length ? "complete" : "incomplete",
+  };
 }
 
 interface PersonaSpawnOpts {
-  useCaseId?: string;
+  useCaseFile?: string;
 }
 
 async function spawnPersona(
@@ -216,12 +128,9 @@ async function spawnPersona(
   config: Config,
   spawnOpts: PersonaSpawnOpts = {},
 ): Promise<void> {
-  const prompt = buildPersonaPrompt(role, sessionDir, projectRoot, config, spawnOpts);
+  const prompt = buildPersonaPrompt(role, sessionDir, projectRoot, spawnOpts);
   const bin = runnerBinary(runner);
   const args = buildRunnerArgs(runner, prompt);
-
-  // The child's RUMI_ROLE should be the runtime persona, not the phase tag.
-  const envRole = role === "pm-code" || role === "pm-explore" ? "pm" : role;
 
   const res = await execa(bin, args, {
     cwd: projectRoot,
@@ -231,8 +140,10 @@ async function spawnPersona(
     env: {
       ...process.env,
       RUMI_SESSION: sessionDir,
-      RUMI_ROLE: envRole,
-      ...(spawnOpts.useCaseId ? { RUMI_USE_CASE: spawnOpts.useCaseId } : {}),
+      RUMI_ROLE: role,
+      ...(spawnOpts.useCaseFile
+        ? { RUMI_USE_CASE_FILE: spawnOpts.useCaseFile }
+        : {}),
     },
   });
 
@@ -240,10 +151,10 @@ async function spawnPersona(
     appendLog(
       sessionDir,
       "orchestrator",
-      `⚠ ${role.toUpperCase()} child hit personaRunMs (${config.timeouts.personaRunMs}ms); killed`,
+      `⚠ ${role.toUpperCase()} hit personaRunMs (${config.timeouts.personaRunMs}ms); killed`,
     );
   } else if (res.exitCode !== 0) {
-    appendLog(sessionDir, "orchestrator", `⚠ ${role.toUpperCase()} child exited ${res.exitCode}`);
+    appendLog(sessionDir, "orchestrator", `⚠ ${role.toUpperCase()} exited ${res.exitCode}`);
   }
 }
 
@@ -251,11 +162,13 @@ function buildPersonaPrompt(
   role: PersonaRole,
   sessionDir: string,
   projectRoot: string,
-  _config: Config,
   spawnOpts: PersonaSpawnOpts,
 ): string {
-  const template = fs.readFileSync(path.join(templateDir(), `persona-${role}.md`), "utf8");
-  const session = readSession(sessionDir);
+  const template = fs.readFileSync(
+    path.join(templateDir(), `persona-${role}.md`),
+    "utf8",
+  );
+  const meta = readMeta(sessionDir);
 
   const lines = [
     template.trim(),
@@ -263,68 +176,33 @@ function buildPersonaPrompt(
     "## Session context",
     `- Session directory: \`${sessionDir}\``,
     `- Project root: \`${projectRoot}\``,
-    `- feature.md path: \`${path.join(sessionDir, "feature.md")}\``,
-    `- e2e/ directory: \`${path.join(sessionDir, "e2e")}\``,
-    "",
-    "## URL",
-    `- \`${session.url}\``,
+    `- feature.md: \`${path.join(sessionDir, "feature.md")}\``,
+    `- URL: \`${meta.url}\``,
   ];
 
-  lines.push("", "## Task", ...buildRoleTask(role, session, spawnOpts));
+  if (role === "fee") {
+    lines.push(`- Write draft.json to: \`${draftPath(sessionDir)}\``);
+  }
+  if (role === "qa" && spawnOpts.useCaseFile) {
+    lines.push(
+      `- Use case file: \`${spawnOpts.useCaseFile}\``,
+      `- Playwright spec output: \`${spawnOpts.useCaseFile.replace(/\.json$/, ".test.ts")}\``,
+    );
+  }
 
   return lines.join("\n");
 }
 
-// Scoped context injection (Theme 7). Each persona sees only the fields
-// relevant to its phase. Smaller models stay focused; prompt size stays flat
-// regardless of session size.
-function buildRoleTask(role: PersonaRole, session: Session, spawnOpts: PersonaSpawnOpts): string[] {
-  switch (role) {
-    case "pm-code": {
-      return [
-        "- Fill `feature.md` from the codebase. Do not open the URL in this phase.",
-        "- When done, run `rumi session lint-feature-md` and fix any reported problems.",
-      ];
-    }
-    case "pm-explore": {
-      const existingCount = session.useCases.length;
-      return [
-        "- Open the URL with playwright-cli. Confirm what's in `feature.md` is real.",
-        `- Draft 3–8 use cases via \`rumi session add-use-case\`. (${existingCount} already present.)`,
-        "- Set description via `rumi session set-description`.",
-      ];
-    }
-    case "fee": {
-      const needs = session.useCases
-        .filter((uc) => !uc.actions || uc.actions.length === 0)
-        .map((uc) => `  - \`${uc.id}\`: ${uc.title} — ${uc.description}`);
-      return [
-        '- Add 5–10 intent-level actions for each use case below using `rumi session add-action <id> "<step>"`.',
-        "- Use `rumi session add-use-case` for any real gaps you find.",
-        "",
-        "Use cases needing actions:",
-        ...needs,
-      ];
-    }
-    case "qa": {
-      const id = spawnOpts.useCaseId ?? "";
-      const uc = session.useCases.find((u) => u.id === id);
-      if (!uc) return [`- ERROR: use case id "${id}" not found in session.`];
-      const actions = (uc.actions ?? []).map((a, i) => `  ${i + 1}. ${a}`);
-      return [
-        `- Assigned use case id: \`${uc.id}\``,
-        `- Title: ${uc.title}`,
-        `- Description: ${uc.description}`,
-        "- Actions:",
-        ...actions,
-        "- Record result via `rumi session record-result <id> <passed|failed|blocked> [--reason \"...\"]`.",
-        `- Fill \`e2e/${uc.id}.test.ts\` (already scaffolded with goto + timeouts).`,
-      ];
-    }
-  }
+interface SessionMeta {
+  url: string;
+  createdAt: string;
+}
+
+function readMeta(sessionDir: string): SessionMeta {
+  const file = path.join(sessionDir, "meta.json");
+  return JSON.parse(fs.readFileSync(file, "utf8")) as SessionMeta;
 }
 
 function findProjectRoot(sessionDir: string): string {
-  // session dir is <projectRoot>/rumi/<slug>
   return path.resolve(sessionDir, "..", "..");
 }

@@ -9,15 +9,9 @@ export const configSchema = z
     runner: z.enum(["claude", "opencode"]).nullable().default(null),
     timeouts: z
       .object({
+        // Max wall-clock for a single persona subprocess. 30 min covers a
+        // deep QA pass with settling delays between ~10 actions.
         personaRunMs: z.number().int().min(60_000).default(1_800_000),
-        playwrightActionMs: z.number().int().min(1_000).default(30_000),
-        playwrightNavigationMs: z.number().int().min(1_000).default(60_000),
-        // Per-test timeout baked into generated specs via `test.setTimeout`.
-        // Playwright's default is 30s — way too tight once a test has 5+
-        // actions at 30s each, even when most pass quickly. 3 min gives
-        // headroom for SPA hydration and network jitter without hiding
-        // genuine failures.
-        playwrightTestMs: z.number().int().min(30_000).default(180_000),
       })
       .default({}),
   })

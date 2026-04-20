@@ -24,18 +24,6 @@ export function sessionDir(projectRoot: string, url: string): string {
   return path.join(projectRumiRoot(projectRoot), urlSlug(url));
 }
 
-export function sessionJsonPath(sessionDir: string): string {
-  return path.join(sessionDir, "session.json");
-}
-
-export function featureDocPath(sessionDir: string): string {
-  return path.join(sessionDir, "feature.md");
-}
-
-export function e2eDir(sessionDir: string): string {
-  return path.join(sessionDir, "e2e");
-}
-
 export function logsPath(sessionDir: string): string {
   return path.join(sessionDir, "logs.txt");
 }

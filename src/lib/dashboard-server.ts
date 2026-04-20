@@ -2,10 +2,10 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 
-// Serves the dashboard. Static assets (index.html, app.js, style.css) are
-// baked into the image at /opt/rumi/dashboard; session artefacts
-// (sessions.json, <slug>/session.json, <slug>/logs.txt, <slug>/e2e/*.test.ts)
-// come from the bind-mounted host project at /work/rumi.
+// Serves the dashboard. Static assets (index.html, app.js, style.css) come
+// from the package's dashboard/ directory; session artefacts
+// (sessions.json, <slug>/meta.json, <slug>/tests/*.json, <slug>/logs.jsonl)
+// come from the project's rumi/ directory.
 
 export const DASHBOARD_MARKER = "rumi dashboard";
 
@@ -13,8 +13,8 @@ const STATIC_NAMES = new Set(["index.html", "app.js", "style.css"]);
 
 export interface DashboardServerOptions {
   port: number;
-  assetsDir: string; // e.g. /opt/rumi/dashboard
-  dataDir: string;  // e.g. /work/rumi
+  assetsDir: string;
+  dataDir: string;
 }
 
 export function startDashboardServer(opts: DashboardServerOptions): http.Server {
@@ -27,8 +27,6 @@ export function startDashboardServer(opts: DashboardServerOptions): http.Server 
       if (rel === "" || rel === "index.html") rel = "index.html";
 
       if (rel === "__shutdown") {
-        // Loopback-only: the caller is `rumi init` asking us to exit so it
-        // can spawn a fresh dashboard on the same port.
         const remote = req.socket.remoteAddress ?? "";
         if (req.method !== "POST" || !isLoopback(remote)) {
           res.statusCode = 403;
@@ -44,12 +42,18 @@ export function startDashboardServer(opts: DashboardServerOptions): http.Server 
         return sendFile(res, path.join(assetsDir, rel));
       }
 
-      // Dynamic/mounted: sessions.json, <slug>/session.json, <slug>/logs.txt, <slug>/e2e/*.test.ts
       const safe = path.normalize(rel);
       if (safe.startsWith("..") || path.isAbsolute(safe)) {
         res.statusCode = 400;
         return res.end("bad path");
       }
+
+      // Dynamic: <slug>/tests-index.json — generated from the directory listing.
+      const idxMatch = safe.match(/^([^/]+)\/tests-index\.json$/);
+      if (idxMatch) {
+        return sendTestsIndex(res, path.join(dataDir, idxMatch[1]));
+      }
+
       return sendFile(res, path.join(dataDir, safe));
     } catch (e) {
       res.statusCode = 500;
@@ -62,6 +66,20 @@ export function startDashboardServer(opts: DashboardServerOptions): http.Server 
   });
 
   return server;
+}
+
+function sendTestsIndex(res: http.ServerResponse, sessionDir: string): void {
+  const dir = path.join(sessionDir, "tests");
+  const files: string[] = [];
+  if (fs.existsSync(dir)) {
+    for (const name of fs.readdirSync(dir)) {
+      if (name.endsWith(".json")) files.push(name);
+    }
+    files.sort();
+  }
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.end(JSON.stringify({ files }));
 }
 
 function sendFile(res: http.ServerResponse, filePath: string): void {
