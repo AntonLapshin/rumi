@@ -83,14 +83,15 @@ export async function runOrchestrator(sessionDir: string, opts: RunOptions = {})
       const allTyped =
         (target.actions?.length ?? 0) > 0 && (target.actions ?? []).every(isTypedAction);
 
-      // Preflight: open the URL + snapshot.
+      // Preflight: open the URL + snapshot once.
       //   - URL unreachable → block immediately (no sense running exec/QA).
-      //   - For typed-action use cases, selector misses gate execution: a
-      //     missing role/name means the generated spec will time out at 30s
-      //     per action anyway. Fail fast with a useful reason instead of
-      //     burning 3 minutes of Playwright runtime.
-      //   - For prose actions we can't mechanically verify selectors, so
-      //     misses are logged for QA but don't block.
+      //   - Selector misses are **advisory only**. A miss means the label/name
+      //     wasn't on the landing page — but multi-step flows routinely
+      //     reference elements that only appear after earlier actions run
+      //     (e.g. a "Save" button on a detail page reached via a prior
+      //     click). We can't verify those without walking the whole flow,
+      //     which would just be re-running the test. Log the hints for
+      //     humans and let `rumi exec` / QA surface the real result.
       try {
         const pre = await runPreflight({
           useCaseId: target.id,
@@ -116,24 +117,8 @@ export async function runOrchestrator(sessionDir: string, opts: RunOptions = {})
           appendLog(
             sessionDir,
             "orchestrator",
-            `preflight ${target.id}: ${pre.misses.length} selector hint(s)`,
+            `preflight ${target.id}: ${pre.misses.length} selector hint(s) — may appear on later pages, not verified here`,
           );
-          if (allTyped) {
-            const s = readSession(sessionDir);
-            const uc = s.useCases.find((u) => u.id === target.id);
-            if (uc) {
-              const hints = pre.misses.slice(0, 3).map((m) => m.hint).join("; ");
-              uc.status = "failed";
-              uc.reason = `preflight: ${hints}`;
-              session = writeAndReturn(sessionDir, normalize(s));
-              appendLog(
-                sessionDir,
-                "orchestrator",
-                `preflight ${target.id}: typed selectors not in snapshot — marked failed`,
-              );
-            }
-            continue;
-          }
         }
       } catch (e) {
         appendLog(
