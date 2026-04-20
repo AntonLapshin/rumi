@@ -40,6 +40,10 @@ function renderSpec(uc: UseCase, url: string, config: Config): string {
     `test.use({ actionTimeout: ${config.timeouts.playwrightActionMs}, navigationTimeout: ${config.timeouts.playwrightNavigationMs} });`,
     ``,
     `test(${JSON.stringify(uc.title)}, async ({ page }) => {`,
+    // Per-test timeout (Playwright's default is 30s). Lifts the whole-test
+    // ceiling above the sum of per-action budgets so a multi-step test
+    // doesn't time out while individual actions are still within budget.
+    `  test.setTimeout(${config.timeouts.playwrightTestMs});`,
   ];
   if (!skipAutoGoto) header.push(`  await page.goto(${JSON.stringify(url)});`);
 

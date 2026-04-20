@@ -121,9 +121,10 @@ Dashboard HTML/JS/CSS is shipped with the rumi install and served from there; on
   "dashboardPort": 3737,
   "runner": null,                // "claude" | "opencode" to pin; null = auto-detect
   "timeouts": {
-    "personaRunMs": 1800000,     // 30 min — max per persona subprocess
-    "playwrightActionMs": 30000, // 30 s — baked into `test.use({ actionTimeout })` of generated specs
-    "playwrightNavigationMs": 60000 // 60 s — baked into `test.use({ navigationTimeout })`
+    "personaRunMs": 1800000,      // 30 min — max per persona subprocess
+    "playwrightActionMs": 30000,  // 30 s — baked into `test.use({ actionTimeout })` of generated specs
+    "playwrightNavigationMs": 60000, // 60 s — baked into `test.use({ navigationTimeout })`
+    "playwrightTestMs": 180000    // 3 min — baked into generated `test.setTimeout(...)` (default 30 s is too tight for multi-step tests)
   }
 }
 ```

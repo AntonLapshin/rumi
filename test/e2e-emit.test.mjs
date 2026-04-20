@@ -10,7 +10,11 @@ function tmp() {
 }
 
 const config = {
-  timeouts: { playwrightActionMs: 30000, playwrightNavigationMs: 60000 },
+  timeouts: {
+    playwrightActionMs: 30000,
+    playwrightNavigationMs: 60000,
+    playwrightTestMs: 180000,
+  },
 };
 
 test("typed actions render a full deterministic spec", () => {
@@ -32,6 +36,7 @@ test("typed actions render a full deterministic spec", () => {
   assert.ok(body.includes("page.getByLabel(\"Email\").fill(\"qa@example.com\")"));
   assert.ok(body.includes("page.getByRole(\"button\", { name: \"Sign in\" }).click()"));
   assert.ok(body.includes("expect(page.getByText(\"Welcome\")).toBeVisible()"));
+  assert.ok(body.includes("test.setTimeout(180000)"), "should set per-test timeout");
   assert.ok(!body.includes("TODO(qa)"), "should not contain TODO when all actions typed");
 });
 

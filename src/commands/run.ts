@@ -80,9 +80,17 @@ export async function runOrchestrator(sessionDir: string, opts: RunOptions = {})
       session = writeAndReturn(sessionDir, session);
       scaffoldE2eSpec(sessionDir, target, session.url, config);
 
-      // Preflight: open the URL + snapshot. Short-circuit by marking the use
-      // case blocked when unreachable. Selector hints are logged for humans
-      // but don't alter state (snapshot format varies; advisory only).
+      const allTyped =
+        (target.actions?.length ?? 0) > 0 && (target.actions ?? []).every(isTypedAction);
+
+      // Preflight: open the URL + snapshot.
+      //   - URL unreachable → block immediately (no sense running exec/QA).
+      //   - For typed-action use cases, selector misses gate execution: a
+      //     missing role/name means the generated spec will time out at 30s
+      //     per action anyway. Fail fast with a useful reason instead of
+      //     burning 3 minutes of Playwright runtime.
+      //   - For prose actions we can't mechanically verify selectors, so
+      //     misses are logged for QA but don't block.
       try {
         const pre = await runPreflight({
           useCaseId: target.id,
@@ -110,6 +118,22 @@ export async function runOrchestrator(sessionDir: string, opts: RunOptions = {})
             "orchestrator",
             `preflight ${target.id}: ${pre.misses.length} selector hint(s)`,
           );
+          if (allTyped) {
+            const s = readSession(sessionDir);
+            const uc = s.useCases.find((u) => u.id === target.id);
+            if (uc) {
+              const hints = pre.misses.slice(0, 3).map((m) => m.hint).join("; ");
+              uc.status = "failed";
+              uc.reason = `preflight: ${hints}`;
+              session = writeAndReturn(sessionDir, normalize(s));
+              appendLog(
+                sessionDir,
+                "orchestrator",
+                `preflight ${target.id}: typed selectors not in snapshot — marked failed`,
+              );
+            }
+            continue;
+          }
         }
       } catch (e) {
         appendLog(
@@ -121,8 +145,6 @@ export async function runOrchestrator(sessionDir: string, opts: RunOptions = {})
 
       // Fast path: if every action on this use case is typed, the spec is
       // fully rendered. Run it via `rumi exec` — no QA persona needed.
-      const allTyped =
-        (target.actions?.length ?? 0) > 0 && (target.actions ?? []).every(isTypedAction);
       let handled = false;
       if (allTyped) {
         try {
