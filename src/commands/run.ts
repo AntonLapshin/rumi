@@ -9,8 +9,6 @@ import { buildRunnerArgs, detectRunner, Runner, runnerBinary } from "../lib/runn
 import { Config, readConfig } from "../lib/config.js";
 import { normalize } from "../lib/normalize.js";
 import { scaffoldE2eSpec } from "../lib/e2e-scaffold.js";
-import { isTypedAction } from "../lib/schema.js";
-import { runExec } from "./exec.js";
 import { runPreflight } from "./preflight.js";
 
 export interface RunOptions {
@@ -80,24 +78,11 @@ export async function runOrchestrator(sessionDir: string, opts: RunOptions = {})
       session = writeAndReturn(sessionDir, session);
       scaffoldE2eSpec(sessionDir, target, session.url, config);
 
-      const allTyped =
-        (target.actions?.length ?? 0) > 0 && (target.actions ?? []).every(isTypedAction);
-
-      // Preflight: open the URL + snapshot once.
-      //   - URL unreachable → block immediately (no sense running exec/QA).
-      //   - Selector misses are **advisory only**. A miss means the label/name
-      //     wasn't on the landing page — but multi-step flows routinely
-      //     reference elements that only appear after earlier actions run
-      //     (e.g. a "Save" button on a detail page reached via a prior
-      //     click). We can't verify those without walking the whole flow,
-      //     which would just be re-running the test. Log the hints for
-      //     humans and let `rumi exec` / QA surface the real result.
+      // Preflight: is the URL reachable? If not, block immediately — there's
+      // no point spawning QA for a page that won't load. Locator discovery
+      // happens live in the QA persona against the real page.
       try {
-        const pre = await runPreflight({
-          useCaseId: target.id,
-          sessionDir,
-          projectRoot,
-        });
+        const pre = await runPreflight({ sessionDir, projectRoot });
         if (!pre.reachable) {
           const s = readSession(sessionDir);
           const uc = s.useCases.find((u) => u.id === target.id);
@@ -113,13 +98,6 @@ export async function runOrchestrator(sessionDir: string, opts: RunOptions = {})
           }
           continue;
         }
-        if (pre.misses.length > 0) {
-          appendLog(
-            sessionDir,
-            "orchestrator",
-            `preflight ${target.id}: ${pre.misses.length} selector hint(s) — may appear on later pages, not verified here`,
-          );
-        }
       } catch (e) {
         appendLog(
           sessionDir,
@@ -128,36 +106,7 @@ export async function runOrchestrator(sessionDir: string, opts: RunOptions = {})
         );
       }
 
-      // Fast path: if every action on this use case is typed, the spec is
-      // fully rendered. Run it via `rumi exec` — no QA persona needed.
-      let handled = false;
-      if (allTyped) {
-        try {
-          const result = await runExec({
-            useCaseId: target.id,
-            sessionDir,
-            projectRoot,
-          });
-          handled = result.ranSpec;
-          if (handled) {
-            appendLog(
-              sessionDir,
-              "orchestrator",
-              `exec ${target.id}: ${result.status}${result.reason ? ` — ${result.reason}` : ""}`,
-            );
-          }
-        } catch (e) {
-          appendLog(
-            sessionDir,
-            "orchestrator",
-            `⚠ exec ${target.id} crashed: ${(e as Error).message}; falling back to QA persona`,
-          );
-        }
-      }
-
-      if (!handled) {
-        await spawnPersona("qa", sessionDir, projectRoot, runner, config, { useCaseId: target.id });
-      }
+      await spawnPersona("qa", sessionDir, projectRoot, runner, config, { useCaseId: target.id });
       session = writeAndReturn(sessionDir, normalize(readSession(sessionDir)));
 
       // Guard against QA leaving its assigned use case non-terminal (crashed,
@@ -350,7 +299,7 @@ function buildRoleTask(role: PersonaRole, session: Session, spawnOpts: PersonaSp
         .filter((uc) => !uc.actions || uc.actions.length === 0)
         .map((uc) => `  - \`${uc.id}\`: ${uc.title} — ${uc.description}`);
       return [
-        '- Fill 5–15 actions for each use case below using `rumi session add-action <id> "<step>"`.',
+        '- Add 5–10 intent-level actions for each use case below using `rumi session add-action <id> "<step>"`.',
         "- Use `rumi session add-use-case` for any real gaps you find.",
         "",
         "Use cases needing actions:",

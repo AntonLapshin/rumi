@@ -5,9 +5,6 @@ import { normalize } from "../lib/normalize.js";
 import { projectRumiRoot, slugify } from "../lib/paths.js";
 import { appendLog, appendLogEvent } from "../lib/logger.js";
 import {
-  Action,
-  ActionObject,
-  actionObjectSchema,
   Session,
   UseCase,
   useCaseStatusSchema,
@@ -156,26 +153,19 @@ export function runAddUseCase(opts: AddUseCaseOpts): void {
 
 export interface AddActionOpts extends BaseOpts {
   useCaseId: string;
-  // Either a free-text prose step (legacy) or a typed action object.
-  text?: string;
-  typed?: ActionObject;
+  text: string;
 }
 
 const ACTION_MIN = 5;
-const ACTION_MAX = 15;
+const ACTION_MAX = 10;
 
 export function runAddAction(opts: AddActionOpts): void {
-  const action: Action | null = opts.typed
-    ? (actionObjectSchema.parse(opts.typed) as Action)
-    : opts.text
-      ? opts.text.trim()
-      : null;
-  if (!action) throw new Error("provide either a text step or a --<type> flag");
-  if (typeof action === "string" && action.length > 300) {
+  const action = opts.text?.trim();
+  if (!action) throw new Error("action text is required");
+  if (action.length > 300) {
     throw new Error("action too long (>300 chars); tighten it");
   }
 
-  let summary = "";
   mutate(opts, (s) => {
     const uc = findUseCase(s, opts.useCaseId);
     uc.actions = [...(uc.actions ?? []), action];
@@ -184,12 +174,9 @@ export function runAddAction(opts: AddActionOpts): void {
         `use case "${opts.useCaseId}" has ${uc.actions.length} actions; cap is ${ACTION_MAX}`,
       );
     }
-    summary = typeof action === "string" ? action : `[${action.type}]`;
   });
-  logEvent(opts, "add-action", `add-action ${opts.useCaseId}: ${summary}`, {
+  logEvent(opts, "add-action", `add-action ${opts.useCaseId}: ${action}`, {
     useCaseId: opts.useCaseId,
-    typed: typeof action !== "string",
-    type: typeof action === "string" ? null : action.type,
   });
   console.log("ok");
 }
@@ -198,15 +185,13 @@ export function runAddAction(opts: AddActionOpts): void {
 
 export interface SetActionsOpts extends BaseOpts {
   useCaseId: string;
-  // Either strings or typed action objects. The union is validated against
-  // actionSchema on write.
-  actions: Action[];
+  actions: string[];
 }
 
 export function runSetActions(opts: SetActionsOpts): void {
-  const actions: Action[] = (opts.actions ?? [])
-    .map((a) => (typeof a === "string" ? a.trim() : a))
-    .filter((a) => (typeof a === "string" ? a.length > 0 : true));
+  const actions: string[] = (opts.actions ?? [])
+    .map((a) => a.trim())
+    .filter((a) => a.length > 0);
   if (actions.length < ACTION_MIN || actions.length > ACTION_MAX) {
     throw new Error(
       `need ${ACTION_MIN}–${ACTION_MAX} actions, got ${actions.length}`,

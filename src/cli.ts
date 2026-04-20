@@ -5,7 +5,6 @@ import { runServe } from "./commands/serve.js";
 import { runOrchestrator } from "./commands/run.js";
 import { runInstall } from "./commands/install.js";
 import { runLog } from "./commands/log.js";
-import { runExec } from "./commands/exec.js";
 import { runPreflight } from "./commands/preflight.js";
 import {
   runAddAction,
@@ -119,38 +118,18 @@ program
 program
   .command("preflight")
   .description(
-    "Open the session URL via playwright-cli, take one snapshot, and check that each typed action's selector has a plausible match. Advisory — misses are surfaced but don't alter state.",
+    "Reachability probe: open the session URL via playwright-cli and take one snapshot. Exits non-zero if the URL can't be loaded.",
   )
-  .option("--use-case <id>", "check a specific use case's actions")
   .option("--session <path>", "session directory (defaults to $RUMI_SESSION or newest)")
   .option("--project-root <path>", "project root (defaults to cwd)")
   .option("--timeout <ms>", "per-command timeout (default 30000)", (v) => Number(v))
-  .action(async (options: { useCase?: string; session?: string; projectRoot?: string; timeout?: number }) => {
+  .action(async (options: { session?: string; projectRoot?: string; timeout?: number }) => {
     const r = await runPreflight({
-      useCaseId: options.useCase,
       sessionDir: options.session,
       projectRoot: options.projectRoot,
       timeoutMs: options.timeout,
     });
     if (!r.reachable) process.exit(1);
-  });
-
-program
-  .command("exec")
-  .description(
-    "Run the pre-generated e2e spec for a use case via `npx playwright test`. " +
-    "Records passed/failed/blocked on the use case. Deterministic — no LLM needed when actions are typed.",
-  )
-  .argument("<useCaseId>", "use case id (matches session.useCases[i].id)")
-  .option("--session <path>", "session directory (defaults to $RUMI_SESSION or newest)")
-  .option("--project-root <path>", "project root (defaults to cwd)")
-  .action(async (useCaseId: string, options: { session?: string; projectRoot?: string }) => {
-    const result = await runExec({
-      useCaseId,
-      sessionDir: options.session,
-      projectRoot: options.projectRoot,
-    });
-    if (result.status === "failed" || result.status === "blocked") process.exit(1);
   });
 
 program
@@ -203,88 +182,23 @@ sessionCommonOpts(
   session
     .command("add-action")
     .description(
-      "Append one action step. Prefer a typed flag (--goto/--click/--fill/...) over free text so the e2e spec can be generated deterministically.",
+      "Append one intent-level action step (what the user is trying to accomplish, not which widget to click). QA resolves it against a live snapshot.",
     )
     .argument("<useCaseId>", "use case id")
-    .argument("[text]", "legacy free-text step (omit if using a typed flag)")
-    .option("--goto <url>", "Navigate to URL")
-    .option("--click", "click an element (use --role + --name)")
-    .option("--fill", "fill an input (use --label + --value)")
-    .option("--press <key>", "press a keyboard key (e.g. Enter)")
-    .option("--wait-for-url <substr>", "wait for URL to match")
-    .option("--expect-text <text>", "assert visible text")
-    .option("--expect-role", "assert element visible (use --role + --name)")
-    .option("--role <role>", "ARIA role (button/link/textbox/...)")
-    .option("--name <name>", "accessible name")
-    .option("--label <label>", "input label")
-    .option("--value <value>", "fill value")
+    .argument("<text>", "intent-level step")
     .action((
       useCaseId: string,
-      text: string | undefined,
-      options: {
-        goto?: string;
-        click?: boolean;
-        fill?: boolean;
-        press?: string;
-        waitForUrl?: string;
-        expectText?: string;
-        expectRole?: boolean;
-        role?: string;
-        name?: string;
-        label?: string;
-        value?: string;
-        session?: string;
-        projectRoot?: string;
-      },
+      text: string,
+      options: { session?: string; projectRoot?: string },
     ) => {
-      const typed = parseTypedAction(options);
-      if (typed && text) {
-        throw new Error("pass either a typed flag or free text, not both");
-      }
       runAddAction({
         useCaseId,
         text,
-        typed,
         sessionDir: options.session,
         projectRoot: options.projectRoot,
       });
     }),
 );
-
-function parseTypedAction(o: {
-  goto?: string;
-  click?: boolean;
-  fill?: boolean;
-  press?: string;
-  waitForUrl?: string;
-  expectText?: string;
-  expectRole?: boolean;
-  role?: string;
-  name?: string;
-  label?: string;
-  value?: string;
-}): import("./lib/schema.js").ActionObject | undefined {
-  const count = [o.goto, o.click, o.fill, o.press, o.waitForUrl, o.expectText, o.expectRole].filter(Boolean).length;
-  if (count === 0) return undefined;
-  if (count > 1) throw new Error("pick exactly one typed action flag");
-  if (o.goto) return { type: "goto", url: o.goto };
-  if (o.click) {
-    if (!o.role || !o.name) throw new Error("--click requires --role and --name");
-    return { type: "click", role: o.role, name: o.name };
-  }
-  if (o.fill) {
-    if (!o.label || o.value === undefined) throw new Error("--fill requires --label and --value");
-    return { type: "fill", label: o.label, value: o.value };
-  }
-  if (o.press) return { type: "press", key: o.press };
-  if (o.waitForUrl) return { type: "wait_for_url", url: o.waitForUrl };
-  if (o.expectText) return { type: "expect_text", text: o.expectText };
-  if (o.expectRole) {
-    if (!o.role || !o.name) throw new Error("--expect-role requires --role and --name");
-    return { type: "expect_role", role: o.role, name: o.name };
-  }
-  return undefined;
-}
 
 sessionCommonOpts(
   session

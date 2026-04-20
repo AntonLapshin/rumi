@@ -3,17 +3,13 @@ import path from "node:path";
 import { execa } from "execa";
 import { readSession } from "../lib/session-io.js";
 import { appendLog } from "../lib/logger.js";
-import { Action, isTypedAction } from "../lib/schema.js";
 import { projectRumiRoot } from "../lib/paths.js";
 
-// Pre-QA / pre-exec snapshot. Opens the URL with playwright-cli, captures
-// one snapshot, and reports whether every typed action's selector has a
-// plausible match in the snapshot text. Advisory only — misses are
-// surfaced but don't block execution (the snapshot format can vary and
-// false negatives would be worse than missing a rare true positive).
+// Pre-QA reachability probe. Opens the URL with playwright-cli and captures
+// one snapshot. Its only signal is "is this URL reachable?" — actual locator
+// discovery is QA's job against the real page.
 
 export interface PreflightOptions {
-  useCaseId?: string;
   sessionDir?: string;
   projectRoot?: string;
   timeoutMs?: number;
@@ -21,7 +17,6 @@ export interface PreflightOptions {
 
 export interface PreflightResult {
   reachable: boolean;
-  misses: { action: Action; hint: string }[];
   snapshotBytes: number;
   error?: string;
 }
@@ -30,12 +25,8 @@ export async function runPreflight(opts: PreflightOptions): Promise<PreflightRes
   const dir = resolveSessionDir(opts);
   const session = readSession(dir);
 
-  const actions: Action[] = opts.useCaseId
-    ? session.useCases.find((u) => u.id === opts.useCaseId)?.actions ?? []
-    : [];
-
   const timeout = opts.timeoutMs ?? 30_000;
-  const result: PreflightResult = { reachable: false, misses: [], snapshotBytes: 0 };
+  const result: PreflightResult = { reachable: false, snapshotBytes: 0 };
 
   try {
     await playwright(["session-stop-all"], { timeout }).catch(() => {});
@@ -51,12 +42,6 @@ export async function runPreflight(opts: PreflightOptions): Promise<PreflightRes
     const snap = await playwright(["snapshot"], { timeout });
     const snapshot = `${snap.stdout ?? ""}\n${snap.stderr ?? ""}`;
     result.snapshotBytes = snapshot.length;
-
-    for (const a of actions) {
-      if (!isTypedAction(a)) continue;
-      const hint = checkAction(a, snapshot);
-      if (hint) result.misses.push({ action: a, hint });
-    }
   } catch (e) {
     result.error = (e as Error).message;
   } finally {
@@ -67,54 +52,13 @@ export async function runPreflight(opts: PreflightOptions): Promise<PreflightRes
   appendLog(
     dir,
     "orchestrator",
-    `preflight ${opts.useCaseId ?? "(url)"}: reachable=${result.reachable}, misses=${result.misses.length}, snapshotBytes=${result.snapshotBytes}`,
+    `preflight: reachable=${result.reachable}, snapshotBytes=${result.snapshotBytes}`,
   );
   return result;
 }
 
 function finish(result: PreflightResult): void {
-  // JSON on stdout; concise so callers (orchestrator, humans) can parse.
-  const summary = {
-    reachable: result.reachable,
-    snapshotBytes: result.snapshotBytes,
-    misses: result.misses.map((m) => ({
-      action: m.action,
-      hint: m.hint,
-    })),
-    error: result.error,
-  };
-  console.log(JSON.stringify(summary, null, 2));
-}
-
-function checkAction(a: Exclude<Action, string>, snapshot: string): string | null {
-  // Loose substring check — snapshot format varies by playwright-cli version.
-  // A miss here is a hint, not a hard failure.
-  switch (a.type) {
-    case "goto":
-    case "wait_for_url":
-      return null; // not a selector
-    case "click":
-    case "expect_role": {
-      if (!snapshot.includes(a.name)) {
-        return `snapshot has no match for "${a.name}" (${a.role})`;
-      }
-      return null;
-    }
-    case "fill": {
-      if (!snapshot.includes(a.label)) {
-        return `snapshot has no match for label "${a.label}"`;
-      }
-      return null;
-    }
-    case "press":
-      return null;
-    case "expect_text": {
-      if (!snapshot.includes(a.text)) {
-        return `snapshot has no match for text "${a.text}"`;
-      }
-      return null;
-    }
-  }
+  console.log(JSON.stringify(result, null, 2));
 }
 
 function playwright(args: string[], opts: { timeout: number }) {

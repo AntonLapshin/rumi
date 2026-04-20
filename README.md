@@ -86,7 +86,7 @@ rumi/
     ├── logs.txt                    # human-readable persona activity
     ├── logs.jsonl                  # structured {ts, persona, event, fields} stream
     └── e2e/
-        └── <id>.test.ts            # deterministically generated when actions are typed, scaffold + TODO otherwise
+        └── <id>.test.ts            # scaffold + TODO(qa) block; QA fills in Playwright steps from live snapshots
 ```
 
 Dashboard HTML/JS/CSS is shipped with the rumi install and served from there; only `sessions.json` and each `session.json` / `logs.txt` / `e2e/*.test.ts` come from the project tree.
@@ -102,7 +102,7 @@ Dashboard HTML/JS/CSS is shipped with the rumi install and served from there; on
     id: string,            // snake_case of title, e.g. create_a_new_timed_gift
     title: string,
     description: string,
-    actions?: Array<string | TypedAction>,  // TypedAction: { type: "goto"|"click"|"fill"|"press"|"wait_for_url"|"expect_text"|"expect_role", ... }
+    actions?: string[],    // intent-level prose steps; QA resolves them against a live snapshot
     status?: "draft" | "ready" | "testing" | "passed" | "failed" | "blocked",
     reason?: string        // only set on failed / blocked
   }>,
@@ -141,9 +141,8 @@ Re-running `rumi init` never overwrites a user-edited `config.json`. CLI flags (
 | `rumi init <url>` | Scaffold a session dir for `<url>`. Idempotent — re-running on the same URL resumes the existing session. Prints the session path on the last line of stdout. |
 | `rumi serve [--port <n>]` | Run the dashboard HTTP server on `:3737` (foreground). |
 | `rumi run <session> [--runner claude\|opencode] [--max-iterations N]` | Run the orchestrator loop (PM → FEE → QA) in-process. Cap auto-scales with use case count (`max(12, useCases*3 + 5)`) unless `--max-iterations` is set. |
-| `rumi session <subcommand>` | Mutate or inspect `session.json` without editing it by hand. Subcommands: `set-description`, `add-use-case`, `add-action`, `set-actions`, `record-result`, `dump`, `validate`, `scaffold-feature-md`, `lint-feature-md`. Prefer typed `add-action --goto/--click/--fill/...` flags so specs can be generated deterministically. |
-| `rumi preflight [--use-case <id>]` | Open the session URL via `playwright-cli`, capture one snapshot, and report selector hints for typed actions. The orchestrator runs this before each QA attempt; blocks the use case on unreachable URL. |
-| `rumi exec <useCaseId>` | Run the pre-generated e2e spec via `npx playwright test` and record the result. Skipped when actions are still free-text. Called automatically by the orchestrator on typed-action use cases. |
+| `rumi session <subcommand>` | Mutate or inspect `session.json` without editing it by hand. Subcommands: `set-description`, `add-use-case`, `add-action`, `set-actions`, `record-result`, `dump`, `validate`, `scaffold-feature-md`, `lint-feature-md`. Actions are intent-level prose — QA resolves them against a live snapshot. |
+| `rumi preflight` | Reachability probe: open the session URL via `playwright-cli` and take one snapshot. The orchestrator runs this before each QA attempt and blocks the use case if the URL can't be loaded. |
 | `rumi log <persona> <message>` | Append a timestamped line to the active session's `logs.txt`. Used by child personas. |
 
 ## Design notes
